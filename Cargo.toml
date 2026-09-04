@@ -1,0 +1,11 @@
+[package]
+name = "block_circulant_codes"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ark-bls12-381 = "0.5.0"
+ark-ff = "0.5.0"
+ark-poly = "0.5.0"
+rayon = "1.10"
+thiserror = "2.0.19"
