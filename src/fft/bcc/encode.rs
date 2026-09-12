@@ -28,55 +28,91 @@ impl<F: FftField> FftBlockCirculantCode<F> {
         self.points.eval_point(j)
     }
 
+    /// Index of a codeword position in the underlying evaluation domain.
+    pub fn domain_index(&self, j: usize) -> usize {
+        self.points.domain_index(j)
+    }
+
     pub(crate) fn points(&self) -> &FftPoints<F> {
         &self.points
     }
 
     pub fn encode(&self, message: &[F]) -> Result<Vec<F>, BcError> {
+        let local_polynomials = self.local_polynomials(message)?;
+        self.encode_from_local_polynomials(&local_polynomials)
+    }
+
+    /// Interpolate the degree-`< k0` polynomials represented by the original
+    /// data in each pair of neighboring information blocks.  This operation
+    /// does not evaluate parity symbols, so callers may commit to these
+    /// polynomials before encoding the block.
+    pub fn local_polynomials(&self, message: &[F]) -> Result<Vec<Vec<F>>, BcError> {
         let params = *self.params();
-
-        // Stage 1: place all message blocks in the global codeword.
-        let mut codeword = self.place_message(message)?;
-
-        // Stage 2: compute only parity because this path does not return coefficients.
-        let local_parities: Vec<Vec<F>> = (0..params.mu)
+        let codeword = self.place_message(message)?;
+        Ok((0..params.mu)
             .into_par_iter()
-            .map(|i| self.encode_local_full(i, &codeword).1)
-            .collect();
+            .map(|i| self.interpolate_local(i, &codeword))
+            .collect())
+    }
 
-        // Stage 3: copy each local parity block into the global codeword.
-        for (i, parity_values) in local_parities.into_iter().enumerate() {
-            for (&pos, &value) in params.parity_block(i).iter().zip(&parity_values) {
-                codeword[pos] = Some(value);
-            }
+    /// Evaluate previously interpolated local polynomials and assemble the
+    /// global BCC codeword. Shared information positions must agree under
+    /// both neighboring polynomials.
+    pub fn encode_from_local_polynomials(
+        &self,
+        local_polynomials: &[Vec<F>],
+    ) -> Result<Vec<F>, BcError> {
+        let params = *self.params();
+        if local_polynomials.len() != params.mu
+            || local_polynomials
+                .iter()
+                .any(|coeffs| coeffs.len() != params.k0())
+        {
+            return Err(BcError::BadMessageLength {
+                got: local_polynomials.iter().map(Vec::len).sum(),
+                expected: params.mu * params.k0(),
+            });
         }
 
+        let local_values = local_polynomials
+            .par_iter()
+            .enumerate()
+            .map(|(i, coeffs)| {
+                let role_a_is_i = i.is_multiple_of(2);
+                let information = self.points.domain_k0.fft(coeffs);
+                let parity = self.compute_parity_from_coeffs(role_a_is_i, coeffs);
+                let mut values = Vec::with_capacity(params.n0());
+                values.extend(
+                    (0..params.omega)
+                        .map(|m| information[if role_a_is_i { 2 * m } else { 2 * m + 1 }]),
+                );
+                values.extend(parity);
+                values.extend(
+                    (0..params.omega)
+                        .map(|m| information[if role_a_is_i { 2 * m + 1 } else { 2 * m }]),
+                );
+                values
+            })
+            .collect::<Vec<_>>();
+
+        let mut codeword = vec![None; params.n()];
+        for (i, values) in local_values.into_iter().enumerate() {
+            for (position, value) in params.local_support(i).into_iter().zip(values) {
+                if codeword[position].is_some_and(|existing| existing != value) {
+                    return Err(BcError::InvalidParams(
+                        "neighboring local polynomials disagree on an overlap".into(),
+                    ));
+                }
+                codeword[position] = Some(value);
+            }
+        }
         Ok(Self::finish_codeword(codeword))
     }
 
     /// Encodes the message and returns local polynomial coefficients.
     pub fn encode_with_local_polys(&self, message: &[F]) -> Result<(Vec<F>, Vec<Vec<F>>), BcError> {
-        let params = *self.params();
-
-        // Stage 1: place all message blocks in the global codeword.
-        let mut codeword = self.place_message(message)?;
-
-        // Stage 2: extend local codes independently in parallel.
-        let local_results: Vec<_> = (0..params.mu)
-            .into_par_iter()
-            .map(|i| self.encode_local_full(i, &codeword))
-            .collect();
-
-        // Stage 3: copy each local parity block into the global codeword.
-        let mut local_polys = Vec::with_capacity(params.mu);
-        for (i, (coeffs, parity_values)) in local_results.into_iter().enumerate() {
-            for (&pos, &val) in params.parity_block(i).iter().zip(parity_values.iter()) {
-                codeword[pos] = Some(val);
-            }
-            local_polys.push(coeffs);
-        }
-
-        let codeword = Self::finish_codeword(codeword);
+        let local_polys = self.local_polynomials(message)?;
+        let codeword = self.encode_from_local_polynomials(&local_polys)?;
         Ok((codeword, local_polys))
     }
 
@@ -162,6 +198,13 @@ impl<F: FftField> FftBlockCirculantCode<F> {
 
     /// Computes local coefficients with IFFT and parity values with FFT.
     fn encode_local_full(&self, i: usize, codeword: &[Option<F>]) -> (Vec<F>, Vec<F>) {
+        let coeffs = self.interpolate_local(i, codeword);
+        let parity = self.compute_parity_from_coeffs(i.is_multiple_of(2), &coeffs);
+        (coeffs, parity)
+    }
+
+    /// Interpolate one local source polynomial without evaluating parity.
+    fn interpolate_local(&self, i: usize, codeword: &[Option<F>]) -> Vec<F> {
         let params = *self.params();
         let role_a_is_i = i.is_multiple_of(2);
         let (block_a, block_b) = if role_a_is_i {
@@ -180,9 +223,7 @@ impl<F: FftField> FftBlockCirculantCode<F> {
             v[2 * k + 1] = codeword[info_b[k]]
                 .expect("info positions are always known before encode_local runs");
         }
-        let coeffs = self.points.domain_k0.ifft(&v);
-        let parity = self.compute_parity_from_coeffs(role_a_is_i, &coeffs);
-        (coeffs, parity)
+        self.points.domain_k0.ifft(&v)
     }
 
     /// Computes parity values with restricted FFTs on the parity cosets.
