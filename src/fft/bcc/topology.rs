@@ -12,7 +12,7 @@
 //! it lets the decoder follow the paper's control flow without changing the
 //! encoder/decoder data model at the same time.
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BcParams {
     pub mu: usize,
     pub omega: usize,
@@ -90,5 +90,13 @@ impl BcParams {
         out.extend(self.parity_block(i));
         out.extend(self.info_block((i + 1) % self.mu));
         out
+    }
+
+    /// Canonical commitment owner for a global codeword position.
+    /// Information symbols also occur in the preceding local support, but
+    /// the honest-proposer v1 protocol assigns every scalar to one arc.
+    pub fn canonical_local_code(&self, position: usize) -> usize {
+        assert!(position < self.n(), "codeword position out of range");
+        position / self.period()
     }
 }

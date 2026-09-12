@@ -5,9 +5,7 @@ pub enum BcError {
     #[error("too many erasures: {erased} known symbols but need at least {needed}")]
     TooFewKnownSymbols { erased: usize, needed: usize },
 
-    #[error(
-        "erasures could not be resolved by the local/pairwise decoder (uncorrectable pattern)"
-    )]
+    #[error("erasures could not be resolved by the local/pairwise decoder (uncorrectable pattern)")]
     Uncorrectable,
 
     #[error("invalid parameters: {0}")]
