@@ -5,11 +5,12 @@ use whir::cmdline_utils::AvailableHash;
 use whir::parameters::ProtocolParameters;
 use whir::protocols::params::DecodingRegime;
 
-use super::code::BccCode;
-use super::das_lifecycle::{ErasureCode, SetupArtifacts, SetupError, setup_roles};
-use super::protocol_profile::{FieldProfile, PcsProfile, ProtocolProfile};
-use crate::BcParams;
+use crate::das::core::{
+    setup_roles, ErasureCode, FieldConfig, PcsConfig, ProtocolConfig, SetupArtifacts, SetupError,
+};
+use crate::das::erasure_code::BccCode;
 use crate::pcs::whir::WhirLocalCodeScheme;
+use crate::BcParams;
 
 pub const SECURITY_BITS: usize = 128;
 pub type BccWhir = SetupArtifacts<BccCode<Fr>, WhirLocalCodeScheme>;
@@ -30,15 +31,15 @@ pub fn parameters() -> ProtocolParameters {
 pub fn setup(params: BcParams, proposer_threads: usize) -> Result<BccWhir, SetupError> {
     let code = BccCode::new(params)?;
     let pcs = WhirLocalCodeScheme::setup(params.k0() - 1, &parameters());
-    let profile = ProtocolProfile::new(
+    let config = ProtocolConfig::new(
         code.profile(),
-        FieldProfile::Bls12381Scalar,
-        PcsProfile::WhirJohnson {
+        FieldConfig::Bls12381Scalar,
+        PcsConfig::WhirJohnson {
             security_bits: SECURITY_BITS as u16,
         },
         6,
         [0x57; 32],
         proposer_threads,
     );
-    setup_roles(code, pcs, profile, proposer_threads)
+    setup_roles(code, pcs, config, proposer_threads)
 }

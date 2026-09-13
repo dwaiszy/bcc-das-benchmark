@@ -1,4 +1,4 @@
-//! Shared commit, encode, open, sample, disperse, and verify lifecycle.
+//! Shared commit, encode, open, sample, disperse, and verify.
 //! This file keeps proposer and light-client roles independent of the code or PCS.
 
 use std::collections::BTreeMap;
@@ -12,10 +12,12 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rayon::ThreadPool;
 use rayon::prelude::*;
-use super::protocol_profile::{CodeProfile, ProtocolProfile, ProtocolProfileId};
-use super::proof_serialization::ProofMeasurements;
-pub use super::errors::{CodeError, ExtractionError, PrepareError, SetupError, VerificationError};
-use crate::pcs::{ArcPcs, OpeningPoint, PcsError, VerificationTiming};
+use crate::das::core::protocol_config::{CodeConfig, ProtocolConfig, ProtocolConfigDigest};
+use crate::das::core::proof_serialization::ProofMeasurements;
+pub use crate::das::core::errors::{CodeError, ExtractionError, PrepareError, SetupError, VerificationError};
+use crate::pcs::{ArcPcs, OpeningPoint, VerificationTiming};
+
+use crate::das::core::scalar_opening::{OpeningStrategy, ScalarOpening};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlockId([u8; 32]);
@@ -102,7 +104,7 @@ impl<F: Copy> EvaluationClaim<F> {
     pub const fn value(&self) -> F {
         self.value
     }
-    fn opening_point(&self) -> OpeningPoint<F> {
+    pub(crate) fn opening_point(&self) -> OpeningPoint<F> {
         OpeningPoint::new(self.point, self.domain_index)
     }
 }
@@ -188,7 +190,7 @@ impl<F> EncodedBlock<F> {
 
 pub trait ErasureCode: Clone + Send + Sync + 'static {
     type Field: FftField + CanonicalSerialize + Send + Sync + 'static;
-    fn profile(&self) -> CodeProfile;
+    fn profile(&self) -> CodeConfig;
     fn message_len(&self) -> usize;
     fn codeword_len(&self) -> usize;
     fn local_code_count(&self) -> usize;
@@ -220,44 +222,6 @@ pub trait ErasureCode: Clone + Send + Sync + 'static {
     fn decode(&self, received: &[Option<Self::Field>]) -> Result<Vec<Self::Field>, CodeError>;
 }
 
-/// Internal extension point for opening profiles. Scalar-opening is the only
-/// active profile; complete-arc behavior is intentionally absent.
-trait OpeningProfile<F, P>
-where
-    F: FftField,
-    P: ArcPcs<F>,
-{
-    fn precompute(
-        pcs: &P,
-        state: &P::ProverState,
-        claims: &[EvaluationClaim<F>],
-    ) -> Result<Vec<P::Proof>, PcsError>;
-}
-
-struct PaperScalarOpening;
-
-impl<F, P> OpeningProfile<F, P> for PaperScalarOpening
-where
-    F: FftField,
-    P: ArcPcs<F>,
-{
-    fn precompute(
-        pcs: &P,
-        state: &P::ProverState,
-        claims: &[EvaluationClaim<F>],
-    ) -> Result<Vec<P::Proof>, PcsError> {
-        let points = claims
-            .iter()
-            .map(EvaluationClaim::opening_point)
-            .collect::<Vec<_>>();
-        let values = claims
-            .iter()
-            .map(EvaluationClaim::value)
-            .collect::<Vec<_>>();
-        pcs.precompute_openings_with_values(state, &points, &values)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PreparationMetrics {
     pub encode: Duration,
@@ -273,7 +237,7 @@ impl PreparationMetrics {
 
 pub struct ConsensusHeader<C> {
     block_id: BlockId,
-    profile_id: ProtocolProfileId,
+    profile_id: ProtocolConfigDigest,
     commitments: Vec<C>,
 }
 
@@ -281,7 +245,7 @@ impl<C> ConsensusHeader<C> {
     pub const fn block_id(&self) -> BlockId {
         self.block_id
     }
-    pub const fn profile_id(&self) -> ProtocolProfileId {
+    pub const fn profile_id(&self) -> ProtocolConfigDigest {
         self.profile_id
     }
     pub fn local_commitments(&self) -> &[C] {
@@ -389,7 +353,7 @@ struct PlannedSample {
 #[derive(Clone, Debug)]
 pub struct SamplePlan {
     block_id: BlockId,
-    profile_id: ProtocolProfileId,
+    profile_id: ProtocolConfigDigest,
     indices: Vec<usize>,
     samples: Vec<PlannedSample>,
 }
@@ -438,12 +402,12 @@ impl<F, Proof> SampleResponses<F, Proof> {
 pub struct AuthenticatedLocalCommitment<'a, C> {
     local_code: LocalCodeId,
     commitment: &'a C,
-    profile_id: ProtocolProfileId,
+    profile_id: ProtocolConfigDigest,
 }
 
 pub struct VerifiedTranscript<F> {
     block_id: BlockId,
-    profile_id: ProtocolProfileId,
+    profile_id: ProtocolConfigDigest,
     indices: Vec<usize>,
     samples: Vec<(usize, F)>,
 }
@@ -464,7 +428,7 @@ where
 {
     code: C,
     pcs: Arc<P>,
-    profile: ProtocolProfile,
+    profile: ProtocolConfig,
     pool: Arc<ThreadPool>,
 }
 
@@ -475,7 +439,7 @@ where
 {
     code: C,
     pcs: Arc<P>,
-    profile: ProtocolProfile,
+    profile: ProtocolConfig,
 }
 
 pub struct SetupArtifacts<C, P>
@@ -490,7 +454,7 @@ where
 pub fn setup_roles<C, P>(
     code: C,
     pcs: P,
-    profile: ProtocolProfile,
+    profile: ProtocolConfig,
     threads: usize,
 ) -> Result<SetupArtifacts<C, P>, SetupError>
 where
@@ -498,7 +462,7 @@ where
     P: ArcPcs<C::Field>,
 {
     if threads == 0 || profile.proposer_threads() != threads || profile.code() != code.profile() {
-        return Err(SetupError::ProfileMismatch);
+        return Err(SetupError::ConfigMismatch);
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -525,7 +489,7 @@ where
     pub fn message_len(&self) -> usize {
         self.code.message_len()
     }
-    pub fn profile(&self) -> &ProtocolProfile {
+    pub fn profile(&self) -> &ProtocolConfig {
         &self.profile
     }
 
@@ -597,7 +561,7 @@ where
                 .par_iter()
                 .zip(encoded.encoded.local_codes())
                 .map(|(state, local)| {
-                    PaperScalarOpening::precompute(self.pcs.as_ref(), state, local.claims())
+                    ScalarOpening::precompute(self.pcs.as_ref(), state, local.claims())
                 })
                 .collect::<Result<Vec<_>, _>>()
         })?;
@@ -630,7 +594,7 @@ where
     }
 
     /// Convenience wrapper for the ordered commit -> encode -> open
-    /// lifecycle. The typed stage methods remain available to callers and to
+    /// workflow. The typed stage methods remain available to callers and to
     /// benchmarks that want the ordering to be explicit.
     pub fn prepare(
         &self,
@@ -648,7 +612,7 @@ where
     C: ErasureCode,
     P: ArcPcs<C::Field>,
 {
-    pub fn profile(&self) -> &ProtocolProfile {
+    pub fn profile(&self) -> &ProtocolConfig {
         &self.profile
     }
     pub fn sample_count(&self) -> usize {
@@ -695,7 +659,7 @@ where
         header: &ConsensusHeader<P::Commitment>,
     ) -> Result<(), VerificationError> {
         if header.profile_id != self.profile.id() {
-            return Err(VerificationError::WrongProfile);
+            return Err(VerificationError::WrongConfig);
         }
         if header.commitments.len() != self.code.local_code_count() {
             return Err(VerificationError::WrongCommitmentCount);
@@ -776,7 +740,7 @@ where
         response: &SampleResponse<C::Field, P::Proof>,
     ) -> Result<(), VerificationError> {
         if authenticated.profile_id != self.profile.id() {
-            return Err(VerificationError::WrongProfile);
+            return Err(VerificationError::WrongConfig);
         }
         let claim = self
             .code
@@ -892,7 +856,7 @@ where
 }
 
 #[cfg(test)]
-mod lifecycle_order_tests {
+mod workflow_order_tests {
     use std::sync::{Arc, Mutex};
 
     use ark_bls12_381::Fr;
@@ -926,8 +890,8 @@ mod lifecycle_order_tests {
     impl ErasureCode for RecordingCode {
         type Field = Fr;
 
-        fn profile(&self) -> CodeProfile {
-            CodeProfile::Rs2d { n0: 2, k0: 1 }
+        fn profile(&self) -> CodeConfig {
+            CodeConfig::Rs2d { n0: 2, k0: 1 }
         }
 
         fn message_len(&self) -> usize {
@@ -1080,10 +1044,10 @@ mod lifecycle_order_tests {
         let pcs = RecordingPcs {
             events: Arc::clone(&events),
         };
-        let profile = ProtocolProfile::new(
+        let profile = ProtocolConfig::new(
             code.profile(),
-            super::super::protocol_profile::FieldProfile::Bls12381Scalar,
-            super::super::protocol_profile::PcsProfile::Kzg {
+            crate::das::core::protocol_config::FieldConfig::Bls12381Scalar,
+            crate::das::core::protocol_config::PcsConfig::Kzg {
                 strategy: KzgStrategy::Fk20,
             },
             1,
@@ -1095,7 +1059,7 @@ mod lifecycle_order_tests {
         setup
             .proposer
             .prepare(BlockId::new([0x55; 32]), &[Fr::from(7)])
-            .expect("ordered proposer lifecycle");
+            .expect("ordered proposer workflow");
 
         let actual = events.lock().expect("event log lock").clone();
         assert_eq!(actual.len(), 12);

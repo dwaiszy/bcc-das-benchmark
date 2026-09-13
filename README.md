@@ -9,15 +9,18 @@ WHIR polynomial commitments.
 ```text
 src/
 ├── das/
-│   ├── das_lifecycle.rs      Generic proposer/light-client lifecycle
-│   ├── code/
+│   ├── core/                 Shared DAS workflow and data types
+│   │   ├── das_workflow.rs   Proposer/light-client workflow
+│   │   ├── errors.rs         DAS error types
+│   │   ├── scalar_opening.rs  Scalar proof-opening generation
+│   │   ├── proof_serialization.rs  Serialized proof measurements
+│   │   └── protocol_config.rs      Protocol configuration
+│   ├── erasure_code/
 │   │   ├── bcc.rs             BCC arc adapter
 │   │   └── rs2d.rs            2D-RS row/column adapter
 │   ├── bcc_kzg/               BCC + KZG setup
 │   ├── bcc_whir/              BCC + WHIR setup
-│   ├── rs2d_kzg/              2D-RS + KZG setup
-│   ├── protocol_profile.rs    Protocol and benchmark profiles
-│   └── proof_serialization.rs Serialized proof and sample-size measurements
+│   └── rs2d_kzg/              2D-RS + KZG setup
 ├── pcs/
 │   ├── mod.rs                 Common PCS interface (`ArcPcs`)
 │   ├── kzg/                   KZG commit/open/verify implementations
@@ -31,7 +34,7 @@ src/
 
 ## How the layers fit together
 
-`das/das_lifecycle.rs` defines the scheme-independent workflow:
+`das/core/das_workflow.rs` defines the scheme-independent workflow:
 
 ```text
 commit original polynomials
@@ -84,7 +87,7 @@ The benchmark configuration records setup, commit, encode, opening, verification
 commitment counts, proof counts, and serialized sizes. Header/commitment
 metadata is reported separately from per-sample light-client download.
 
-Tests are organized around the same public lifecycle for every scheme:
+Tests are organized around the same public workflow for every scheme:
 
 ```text
 commit → encode → open → sample → disperse → verify
