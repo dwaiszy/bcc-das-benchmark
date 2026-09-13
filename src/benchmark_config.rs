@@ -1,4 +1,4 @@
-//! Reproducibility and accounting contract for the three-scheme DAS benchmark.
+//! Reproducible configuration and measurement rules for the DAS benchmark.
 
 use std::fmt::Write as _;
 

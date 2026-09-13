@@ -1,13 +1,16 @@
+//! BCC erasure-code adapter for the generic DAS construction.
+//! It maps global BCC positions to arc-local polynomials and claims.
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use ark_ff::FftField;
 use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
 
-use super::super::construction::{
+use super::super::das_lifecycle::{
     CodeError, EncodedBlock, ErasureCode, EvaluationClaim, LocalCode, LocalCodeId, LocalPosition,
     PolynomialBlock,
 };
-use super::super::profile::CodeProfile;
+use super::super::protocol_profile::CodeProfile;
 use crate::{BcParams, FftBlockCirculantCode};
 
 #[derive(Clone)]

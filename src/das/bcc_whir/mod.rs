@@ -1,4 +1,4 @@
-//! BCC + unchanged upstream WHIR-Johnson paper-scalar DAS alias.
+//! BCC+WHIR setup and adapter.
 
 use ark_bls12_381::Fr;
 use whir::cmdline_utils::AvailableHash;
@@ -6,8 +6,8 @@ use whir::parameters::ProtocolParameters;
 use whir::protocols::params::DecodingRegime;
 
 use super::code::BccCode;
-use super::construction::{ErasureCode, SetupArtifacts, SetupError, setup_roles};
-use super::profile::{FieldProfile, PcsProfile, ProtocolProfile};
+use super::das_lifecycle::{ErasureCode, SetupArtifacts, SetupError, setup_roles};
+use super::protocol_profile::{FieldProfile, PcsProfile, ProtocolProfile};
 use crate::BcParams;
 use crate::pcs::whir::WhirLocalCodeScheme;
 

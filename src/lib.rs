@@ -8,7 +8,7 @@
     clippy::type_complexity
 )]
 pub mod archive;
-pub mod benchmark_contract;
+pub mod benchmark_config;
 pub mod das;
 pub mod error;
 pub mod fft;

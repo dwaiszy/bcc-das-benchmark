@@ -2,7 +2,7 @@
 //!
 //! A commitment proves evaluations of a local polynomial `f`. Coset proofs
 //! use `h=(f-r)/(X^l-g^l)`, while SHPLONK reduces arbitrary points to one KZG
-//! check. The concrete opening interfaces live in `plain.rs`, `coset.rs`,
+//! check. The concrete opening interfaces live in `single_point.rs`, `coset.rs`,
 //! and `shplonk.rs`.
 
 use crate::fft::FftBlockCirculantCode;
@@ -29,7 +29,7 @@ type G2Affine = <Bls12_381 as Pairing>::G2Affine;
 
 /// SRS and verifier key for local-code polynomials of degree `< k0`.
 ///
-/// This setup is demo-only: it samples and discards the toxic waste `beta`
+/// This setup is demo-only: it samples and discards the setup trapdoor `beta`
 /// locally instead of using an MPC ceremony.
 ///
 /// The setup is built manually because coset verification needs the extra
@@ -55,7 +55,7 @@ pub enum KzgStrategy {
     Shplonk,
 }
 
-/// Paper-scalar KZG adapter. The retained strategies remain separate PCS
+/// Scalar-opening KZG adapter. The retained strategies remain separate PCS
 /// implementations; the generic DAS oracle uses FK20.
 pub struct KzgArcPcs {
     inner: KzgLocalCodeScheme,
@@ -286,7 +286,7 @@ impl KzgLocalCodeScheme {
 }
 
 mod coset;
-mod plain;
+mod single_point;
 mod shplonk;
 pub use shplonk::MultipointProof;
 

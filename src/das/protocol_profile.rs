@@ -1,3 +1,5 @@
+//! Protocol profiles and parameter identifiers used for benchmark reproducibility.
+
 use sha2::{Digest, Sha256};
 
 use crate::BcParams;
@@ -9,7 +11,7 @@ impl ProtocolProfileId {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-    pub const fn wire_bytes(&self) -> usize {
+    pub const fn serialized_size(&self) -> usize {
         32
     }
 }
@@ -46,7 +48,7 @@ pub struct ProtocolProfile {
     opening: OpeningProfileId,
     sample_count: usize,
     setup_id: [u8; 32],
-    wire_version: u16,
+    format_version: u16,
     proposer_threads: usize,
 }
 
@@ -104,7 +106,7 @@ impl ProtocolProfile {
             opening: OpeningProfileId::PaperScalar,
             sample_count,
             setup_id,
-            wire_version: 1,
+            format_version: 1,
             proposer_threads,
         }
     }
@@ -129,8 +131,8 @@ impl ProtocolProfile {
     pub const fn setup_id(&self) -> &[u8; 32] {
         &self.setup_id
     }
-    pub const fn wire_version(&self) -> u16 {
-        self.wire_version
+    pub const fn format_version(&self) -> u16 {
+        self.format_version
     }
     pub const fn proposer_threads(&self) -> usize {
         self.proposer_threads

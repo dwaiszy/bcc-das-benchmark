@@ -20,11 +20,11 @@ use whir::transcript::{
     DomainSeparator, Proof as TranscriptProof, ProverState, VerifierState, codecs::Empty,
 };
 
-use self::multilinear_bridge::{coeffs_to_hypercube_evals, multilinear_point};
+use self::univariate_to_multilinear::{coeffs_to_hypercube_evals, multilinear_point};
 use super::UniPoly;
 use crate::pcs::{ArcPcs, OpeningPoint, PcsError, VerificationTiming};
 
-mod multilinear_bridge;
+mod univariate_to_multilinear;
 
 /// Failures normalized at the boundary between DAS and upstream WHIR.
 ///
@@ -72,32 +72,32 @@ impl WhirCommitment {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct WhirProof {
-    /// Compressed transport envelope. It is decompressed before WHIR sees it.
-    wire: Vec<u8>,
+    /// Compressed proof envelope. It is decompressed before WHIR sees it.
+    serialized: Vec<u8>,
     #[cfg(debug_assertions)]
     pattern_suffix: Vec<Interaction>,
 }
 
 impl WhirProof {
-    const WIRE_MAGIC: &'static [u8; 4] = b"WHR1";
+    const PROOF_FORMAT_TAG: &'static [u8; 4] = b"WHR1";
     const COMPRESSION_LEVEL: i32 = 3;
     const MAX_DECOMPRESSED_BYTES: usize = 64 * 1024 * 1024;
 
     pub fn compressed_size(&self) -> usize {
-        self.wire.len()
+        self.serialized.len()
     }
 
-    /// Return the exact bytes carried on the wire. The cryptographic verifier
+    /// Return the exact serialized proof bytes. The cryptographic verifier
     /// never authenticates this compressed representation directly.
-    pub fn wire_bytes(&self) -> &[u8] {
-        &self.wire
+    pub fn serialized_bytes(&self) -> &[u8] {
+        &self.serialized
     }
 
     /// Decode a proof received from the network. Decompression is bounded by
     /// the envelope's declared lengths before the proof reaches WHIR.
-    pub fn from_wire_bytes(bytes: &[u8]) -> Result<Self, WhirAdapterError> {
+    pub fn from_serialized_bytes(bytes: &[u8]) -> Result<Self, WhirAdapterError> {
         let decoded = Self::decompress_bounded(bytes)?;
-        Self::from_uncompressed_wire(&decoded)
+        Self::from_uncompressed_serialized(&decoded)
     }
 
     fn decompress_bounded(bytes: &[u8]) -> Result<Vec<u8>, WhirAdapterError> {
@@ -114,9 +114,9 @@ impl WhirProof {
         Ok(decoded)
     }
 
-    fn uncompressed_wire(narg_suffix: &[u8], hints_suffix: &[u8]) -> Vec<u8> {
+    fn uncompressed_serialized(narg_suffix: &[u8], hints_suffix: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(12 + narg_suffix.len() + hints_suffix.len());
-        bytes.extend_from_slice(Self::WIRE_MAGIC);
+        bytes.extend_from_slice(Self::PROOF_FORMAT_TAG);
         bytes.extend_from_slice(&(narg_suffix.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&(hints_suffix.len() as u32).to_le_bytes());
         bytes.extend_from_slice(narg_suffix);
@@ -124,8 +124,8 @@ impl WhirProof {
         bytes
     }
 
-    fn from_uncompressed_wire(bytes: &[u8]) -> Result<Self, WhirAdapterError> {
-        if bytes.len() < 12 || &bytes[..4] != Self::WIRE_MAGIC {
+    fn from_uncompressed_serialized(bytes: &[u8]) -> Result<Self, WhirAdapterError> {
+        if bytes.len() < 12 || &bytes[..4] != Self::PROOF_FORMAT_TAG {
             return Err(WhirAdapterError::InvalidProof);
         }
         let narg_len = u32::from_le_bytes(
@@ -144,10 +144,10 @@ impl WhirProof {
         if bytes.len() != 12 + payload_len {
             return Err(WhirAdapterError::InvalidProof);
         }
-        let wire = zstd::stream::encode_all(bytes, Self::COMPRESSION_LEVEL)
+        let serialized = zstd::stream::encode_all(bytes, Self::COMPRESSION_LEVEL)
             .map_err(|_| WhirAdapterError::InvalidProof)?;
         Ok(Self {
-            wire,
+            serialized,
             #[cfg(debug_assertions)]
             pattern_suffix: Vec::new(),
         })
@@ -168,19 +168,19 @@ impl WhirProof {
         }
         let narg_suffix = full.narg_string[prefix.narg_string.len()..].to_vec();
         let hints_suffix = full.hints[prefix.hints.len()..].to_vec();
-        let uncompressed = Self::uncompressed_wire(&narg_suffix, &hints_suffix);
-        let wire = zstd::stream::encode_all(&uncompressed[..], Self::COMPRESSION_LEVEL)
+        let uncompressed = Self::uncompressed_serialized(&narg_suffix, &hints_suffix);
+        let serialized = zstd::stream::encode_all(&uncompressed[..], Self::COMPRESSION_LEVEL)
             .map_err(|_| WhirAdapterError::BackendFailure)?;
         Ok(Self {
-            wire,
+            serialized,
             #[cfg(debug_assertions)]
             pattern_suffix: full.pattern[prefix.pattern.len()..].to_vec(),
         })
     }
 
     fn with_prefix(&self, prefix: &TranscriptProof) -> Option<TranscriptProof> {
-        let decoded = Self::decompress_bounded(self.wire.as_slice()).ok()?;
-        if decoded.len() < 12 || &decoded[..4] != Self::WIRE_MAGIC {
+        let decoded = Self::decompress_bounded(self.serialized.as_slice()).ok()?;
+        if decoded.len() < 12 || &decoded[..4] != Self::PROOF_FORMAT_TAG {
             return None;
         }
         let narg_len = u32::from_le_bytes(decoded[4..8].try_into().ok()?) as usize;
@@ -804,7 +804,7 @@ mod tests {
         );
 
         let mut malformed = proof;
-        if let Some(byte) = malformed.wire.last_mut() {
+        if let Some(byte) = malformed.serialized.last_mut() {
             *byte ^= 0x80;
         } else {
             panic!("a WHIR opening proof must contain transport bytes");

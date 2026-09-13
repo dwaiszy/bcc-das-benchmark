@@ -1,13 +1,16 @@
+//! Two-dimensional Reed–Solomon erasure-code adapter for generic DAS.
+//! It exposes source-row commitments and encoded-row evaluation claims.
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use ark_ff::FftField;
 use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
 
-use super::super::construction::{
+use super::super::das_lifecycle::{
     CodeError, EncodedBlock, ErasureCode, EvaluationClaim, LocalCode, LocalCodeId, LocalPosition,
     PolynomialBlock,
 };
-use super::super::profile::CodeProfile;
+use super::super::protocol_profile::CodeProfile;
 use crate::fft::FftTwoDRsCode;
 
 #[derive(Clone)]
