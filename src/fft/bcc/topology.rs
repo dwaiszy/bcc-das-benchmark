@@ -1,18 +1,18 @@
 //! Layout and parameter helpers for BCC.
 //!
-//! This file keeps the repo's simplified index layout, but exposes the paper's
-//! subgroup vocabulary explicitly:
+//! This file keeps the repository's simplified index layout and exposes the
+//! subgroup layout terminology used by the encoder and decoder:
 //!
 //! - `H1` is the local-code evaluation domain used for interpolation.
 //! - `H2` is the smaller subgroup whose cosets organize the overlap structure.
-//! - `H3` is the next level down, used for the paper's per-cell coset view.
+//! - `H3` is the next level down, used for the per-cell coset view.
 //!
 //! In the current implementation these names map onto the existing FFT-point
 //! layout rather than a freshly modeled algebraic object. That is deliberate:
-//! it lets the decoder follow the paper's control flow without changing the
+//! it lets the decoder follow the documented control flow without changing the
 //! encoder/decoder data model at the same time.
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BcParams {
     pub mu: usize,
     pub omega: usize,
@@ -90,5 +90,13 @@ impl BcParams {
         out.extend(self.parity_block(i));
         out.extend(self.info_block((i + 1) % self.mu));
         out
+    }
+
+    /// Canonical commitment owner for a global codeword position.
+    /// Information symbols also occur in the preceding local support, but
+    /// the honest-proposer v1 protocol assigns every scalar to one arc.
+    pub fn canonical_local_code(&self, position: usize) -> usize {
+        assert!(position < self.n(), "codeword position out of range");
+        position / self.period()
     }
 }

@@ -83,20 +83,18 @@ impl<F: FftField> FftTwoDRsCode<F> {
         self.domain_n0.fft(&padded)
     }
 
-    /// Extends the message and also returns its polynomial coefficients.
-    fn extend_with_coeffs(&self, known: &[F]) -> (Vec<F>, Vec<F>) {
-        debug_assert_eq!(known.len(), self.k0);
-        let coeffs = self.domain_k0.ifft(known);
-        let mut padded = coeffs.clone();
-        padded.resize(self.n0, F::zero());
-        let evals = self.domain_n0.fft(&padded);
-        (coeffs, evals)
-    }
-
     /// Systematic encode: message is `k0*k0` symbols, row-major (message
     /// row `r`, column `c` -> `message[r*k0+c]`). Returns the `n0*n0`
     /// codeword, row-major by `domain_n0` natural index.
     pub fn encode(&self, message: &[F]) -> Result<Vec<F>, BcError> {
+        let row_polynomials = self.row_polynomials(message)?;
+        self.encode_from_row_polynomials(&row_polynomials)
+    }
+
+    /// Derive every degree-`< k0` row polynomial from the original `k0 × k0`
+    /// data matrix.  The vertical extension is performed coefficient-wise,
+    /// leaving horizontal evaluation (the encoded rows) for the encode stage.
+    pub fn row_polynomials(&self, message: &[F]) -> Result<Vec<Vec<F>>, BcError> {
         if message.len() != self.k() {
             return Err(BcError::BadMessageLength {
                 got: message.len(),
@@ -104,83 +102,59 @@ impl<F: FftField> FftTwoDRsCode<F> {
             });
         }
 
-        // Stage 1: every message-row extension is independent. Indexed
-        // parallel collection preserves row-major order.
-        let stage1: Vec<F> = message
+        let source_row_coefficients = message
             .par_chunks_exact(self.k0)
-            .map(|row_known| self.extend(row_known))
+            .map(|row| self.domain_k0.ifft(row))
+            .collect::<Vec<_>>();
+        let coefficient_columns = (0..self.k0)
+            .into_par_iter()
+            .map(|coefficient| {
+                let column = source_row_coefficients
+                    .iter()
+                    .map(|row| row[coefficient])
+                    .collect::<Vec<_>>();
+                self.extend(&column)
+            })
+            .collect::<Vec<_>>();
+        Ok((0..self.n0)
+            .map(|row| {
+                (0..self.k0)
+                    .map(|coefficient| coefficient_columns[coefficient][row])
+                    .collect()
+            })
+            .collect())
+    }
+
+    /// Evaluate previously derived row polynomials over the encoded domain.
+    pub fn encode_from_row_polynomials(
+        &self,
+        row_polynomials: &[Vec<F>],
+    ) -> Result<Vec<F>, BcError> {
+        if row_polynomials.len() != self.n0
+            || row_polynomials.iter().any(|coeffs| coeffs.len() != self.k0)
+        {
+            return Err(BcError::BadMessageLength {
+                got: row_polynomials.iter().map(Vec::len).sum(),
+                expected: self.n0 * self.k0,
+            });
+        }
+        Ok(row_polynomials
+            .par_iter()
+            .map(|coeffs| {
+                let mut padded = coeffs.clone();
+                padded.resize(self.n0, F::zero());
+                self.domain_n0.fft(&padded)
+            })
             .collect::<Vec<_>>()
             .into_iter()
             .flatten()
-            .collect();
-
-        // Stage 2: compute all column extensions concurrently. Assemble the
-        // resulting columns sequentially to avoid shared mutable writes.
-        let columns: Vec<Vec<F>> = (0..self.n0)
-            .into_par_iter()
-            .map(|c| {
-                let known: Vec<F> = (0..self.k0).map(|r| stage1[r * self.n0 + c]).collect();
-                self.extend(&known)
-            })
-            .collect();
-        let mut result = vec![F::zero(); self.n0 * self.n0];
-        for (c, column) in columns.into_iter().enumerate() {
-            for (r, value) in column.into_iter().enumerate() {
-                result[r * self.n0 + c] = value;
-            }
-        }
-        Ok(result)
+            .collect())
     }
 
     /// Encodes the message and returns each row's coefficients.
     pub fn encode_with_row_polys(&self, message: &[F]) -> Result<(Vec<F>, Vec<Vec<F>>), BcError> {
-        if message.len() != self.k() {
-            return Err(BcError::BadMessageLength {
-                got: message.len(),
-                expected: self.k(),
-            });
-        }
-
-        // Stage 1: extend all message rows concurrently while retaining the
-        // coefficient vectors needed for the systematic final rows.
-        let stage1_rows: Vec<_> = message
-            .par_chunks_exact(self.k0)
-            .map(|row_known| self.extend_with_coeffs(row_known))
-            .collect();
-        let (stage1_coeffs, filled_rows): (Vec<_>, Vec<_>) = stage1_rows.into_iter().unzip();
-        let stage1: Vec<F> = filled_rows.into_iter().flatten().collect();
-
-        // Stage 2: extend all columns concurrently, then transpose the
-        // collected columns into the row-major codeword deterministically.
-        let columns: Vec<Vec<F>> = (0..self.n0)
-            .into_par_iter()
-            .map(|c| {
-                let known: Vec<F> = (0..self.k0).map(|r| stage1[r * self.n0 + c]).collect();
-                self.extend(&known)
-            })
-            .collect();
-        let mut result = vec![F::zero(); self.n0 * self.n0];
-        for (c, column) in columns.into_iter().enumerate() {
-            for (r, value) in column.into_iter().enumerate() {
-                result[r * self.n0 + c] = value;
-            }
-        }
-
-        let step = self.n0 / self.k0;
-        let row_polys = (0..self.n0)
-            .into_par_iter()
-            .map(|i| {
-                if i % step == 0 {
-                    stage1_coeffs[i / step].clone()
-                } else {
-                    let known: Vec<F> = (0..self.k0)
-                        .map(|m| result[i * self.n0 + m * step])
-                        .collect();
-                    self.domain_k0.ifft(&known)
-                }
-            })
-            .collect();
-
+        let row_polys = self.row_polynomials(message)?;
+        let result = self.encode_from_row_polynomials(&row_polys)?;
         Ok((result, row_polys))
     }
 
