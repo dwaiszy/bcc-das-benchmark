@@ -84,8 +84,10 @@ source commitments using the vertical RS coefficients.
 ## Benchmark and tests
 
 The benchmark configuration records setup, commit, encode, opening, verification,
-commitment counts, proof counts, and serialized sizes. Header/commitment
-metadata is reported separately from per-sample light-client download.
+commitment counts, proof counts, and serialized sizes. Header/commitment metadata
+is reported separately as `header_bytes`, and is also included in the
+`light_client_download_bytes` total together with sampled values, response
+metadata, and opening proofs.
 
 Tests are organized around the same public workflow for every scheme:
 
