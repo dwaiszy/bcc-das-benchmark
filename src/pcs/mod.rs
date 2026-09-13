@@ -1,3 +1,5 @@
+//! Common polynomial-commitment interface shared by KZG and WHIR adapters.
+
 pub mod kzg;
 pub mod whir;
 pub use kzg::{KzgLocalCodeScheme, MultipointProof, UniPoly, local_message_polynomial};
@@ -6,7 +8,7 @@ use ark_ff::FftField;
 use std::time::Duration;
 use thiserror::Error;
 
-/// Verification timing split for wire-level processing and cryptographic
+/// Verification timing split for serialized-proof processing and cryptographic
 /// checking. `total` includes `decompression`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VerificationTiming {

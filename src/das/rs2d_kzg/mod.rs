@@ -1,10 +1,10 @@
-//! 2D-RS + KZG paper-scalar baseline alias.
+//! 2D-RS+KZG setup and adapter.
 
 use ark_bls12_381::Fr;
 
 use super::code::Rs2dCode;
-use super::construction::{ErasureCode, SetupArtifacts, SetupError, setup_roles};
-use super::profile::{FieldProfile, PcsProfile, ProtocolProfile};
+use super::das_lifecycle::{ErasureCode, SetupArtifacts, SetupError, setup_roles};
+use super::protocol_profile::{FieldProfile, PcsProfile, ProtocolProfile};
 use crate::pcs::kzg::{KzgArcPcs, KzgStrategy};
 
 pub type Rs2dKzg = SetupArtifacts<Rs2dCode<Fr>, KzgArcPcs>;

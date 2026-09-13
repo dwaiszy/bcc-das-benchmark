@@ -1,3 +1,5 @@
+//! Error types produced by the block-circulant and erasure-code layers.
+
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -1,3 +1,6 @@
+//! Shared commit, encode, open, sample, disperse, and verify lifecycle.
+//! This file keeps proposer and light-client roles independent of the code or PCS.
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,10 +12,9 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rayon::ThreadPool;
 use rayon::prelude::*;
-use thiserror::Error;
-
-use super::profile::{CodeProfile, ProtocolProfile, ProtocolProfileId};
-use crate::BcError;
+use super::protocol_profile::{CodeProfile, ProtocolProfile, ProtocolProfileId};
+use super::proof_serialization::ProofMeasurements;
+pub use super::errors::{CodeError, ExtractionError, PrepareError, SetupError, VerificationError};
 use crate::pcs::{ArcPcs, OpeningPoint, PcsError, VerificationTiming};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -218,8 +220,8 @@ pub trait ErasureCode: Clone + Send + Sync + 'static {
     fn decode(&self, received: &[Option<Self::Field>]) -> Result<Vec<Self::Field>, CodeError>;
 }
 
-/// Private seam for future opening profiles. Paper-scalar is the only active
-/// profile; complete-arc behavior is intentionally absent.
+/// Internal extension point for opening profiles. Scalar-opening is the only
+/// active profile; complete-arc behavior is intentionally absent.
 trait OpeningProfile<F, P>
 where
     F: FftField,
@@ -254,24 +256,6 @@ where
             .collect::<Vec<_>>();
         pcs.precompute_openings_with_values(state, &points, &values)
     }
-}
-
-#[derive(Debug, Error)]
-pub enum CodeError {
-    #[error("erasure-code geometry is invalid")]
-    InvalidGeometry,
-    #[error("message length does not match the erasure-code dimension")]
-    WrongMessageLength,
-    #[error("encoded local-code shape is invalid")]
-    InvalidEncodedShape,
-    #[error("local polynomial shape is invalid")]
-    InvalidPolynomialShape,
-    #[error("a local polynomial does not evaluate to the encoded symbol")]
-    InconsistentLocalPolynomial,
-    #[error("global or local position is out of range")]
-    PositionOutOfRange,
-    #[error("erasure-code operation failed: {0}")]
-    Codec(#[from] BcError),
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -394,15 +378,6 @@ impl<F, C, State> EncodedCommittedBlock<F, C, State> {
     pub fn header(&self) -> &ConsensusHeader<C> {
         &self.header
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WireSizes {
-    pub header_bytes: usize,
-    pub sample_data_bytes: usize,
-    pub verify_proof_bytes: usize,
-    pub sample_metadata_bytes: usize,
-    pub light_client_download_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -680,13 +655,13 @@ where
         self.profile.sample_count()
     }
 
-    pub fn wire_sizes(
+    pub fn proof_measurements(
         &self,
         header: &ConsensusHeader<P::Commitment>,
         responses: &SampleResponses<C::Field, P::Proof>,
-    ) -> Result<WireSizes, VerificationError> {
+    ) -> Result<ProofMeasurements, VerificationError> {
         self.validate_header(header)?;
-        let header_bytes = self.profile.id().wire_bytes()
+        let header_bytes = self.profile.id().serialized_size()
             + header
                 .commitments
                 .iter()
@@ -703,7 +678,7 @@ where
             .map(|response| self.pcs.proof_bytes(&response.proof))
             .sum();
         let sample_metadata_bytes = responses.responses.len() * std::mem::size_of::<u64>();
-        Ok(WireSizes {
+        Ok(ProofMeasurements {
             header_bytes,
             sample_data_bytes,
             verify_proof_bytes,
@@ -916,68 +891,6 @@ where
     }
 }
 
-#[derive(Debug, Error)]
-pub enum SetupError {
-    #[error("protocol profile does not match the selected adapters")]
-    ProfileMismatch,
-    #[error("failed to construct the proposer Rayon pool")]
-    ThreadPool,
-    #[error(transparent)]
-    Code(#[from] CodeError),
-    #[error(transparent)]
-    Pcs(#[from] PcsError),
-}
-
-#[derive(Debug, Error)]
-pub enum PrepareError {
-    #[error("message length {got} does not match {expected}")]
-    WrongMessageLength { got: usize, expected: usize },
-    #[error("PCS returned the wrong number of scalar proofs")]
-    WrongProofCount,
-    #[error(transparent)]
-    Code(#[from] CodeError),
-    #[error(transparent)]
-    Pcs(#[from] PcsError),
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum VerificationError {
-    #[error("header selects a different protocol profile")]
-    WrongProfile,
-    #[error("header contains the wrong number of ordered commitments")]
-    WrongCommitmentCount,
-    #[error("sample count does not match the protocol profile")]
-    WrongSampleCount,
-    #[error("one light client cannot sample the same index twice")]
-    DuplicateSample,
-    #[error("sample position is outside the encoded block")]
-    PositionOutOfRange,
-    #[error("sample plan or response order does not match the header")]
-    PlanMismatch,
-    #[error("a required dispersed response is missing")]
-    MissingResponse,
-    #[error("response does not match the canonical local-code claim")]
-    NonCanonicalClaim,
-    #[error("commitment is not the sampled position's owning local-code commitment")]
-    WrongCommitment,
-    #[error("PCS proof verification failed")]
-    InvalidProof,
-}
-
-#[derive(Debug, Error)]
-pub enum ExtractionError {
-    #[error("header verification failed: {0}")]
-    Verification(VerificationError),
-    #[error("transcript belongs to another block or profile")]
-    WrongTranscript,
-    #[error("verified transcripts conflict at one global index")]
-    ConflictingValue,
-    #[error("received {got} distinct symbols but require {required}")]
-    InsufficientReception { got: usize, required: usize },
-    #[error(transparent)]
-    Code(CodeError),
-}
-
 #[cfg(test)]
 mod lifecycle_order_tests {
     use std::sync::{Arc, Mutex};
@@ -1169,8 +1082,8 @@ mod lifecycle_order_tests {
         };
         let profile = ProtocolProfile::new(
             code.profile(),
-            super::super::profile::FieldProfile::Bls12381Scalar,
-            super::super::profile::PcsProfile::Kzg {
+            super::super::protocol_profile::FieldProfile::Bls12381Scalar,
+            super::super::protocol_profile::PcsProfile::Kzg {
                 strategy: KzgStrategy::Fk20,
             },
             1,

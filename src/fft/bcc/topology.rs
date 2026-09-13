@@ -1,15 +1,15 @@
 //! Layout and parameter helpers for BCC.
 //!
-//! This file keeps the repo's simplified index layout, but exposes the paper's
-//! subgroup vocabulary explicitly:
+//! This file keeps the repository's simplified index layout and exposes the
+//! subgroup layout terminology used by the encoder and decoder:
 //!
 //! - `H1` is the local-code evaluation domain used for interpolation.
 //! - `H2` is the smaller subgroup whose cosets organize the overlap structure.
-//! - `H3` is the next level down, used for the paper's per-cell coset view.
+//! - `H3` is the next level down, used for the per-cell coset view.
 //!
 //! In the current implementation these names map onto the existing FFT-point
 //! layout rather than a freshly modeled algebraic object. That is deliberate:
-//! it lets the decoder follow the paper's control flow without changing the
+//! it lets the decoder follow the documented control flow without changing the
 //! encoder/decoder data model at the same time.
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

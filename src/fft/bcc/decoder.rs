@@ -54,7 +54,7 @@ fn phase1_local_recovery<F: FftField>(code: &FftBlockCirculantCode<F>, received:
             }
 
             // Lines 6-7: invoke the local RS decoder. The auxiliary FFT
-            // domain represents the paper's D^(1) or D^(2) local code.
+            // domain represents the D^(1) or D^(2) local code variant.
             auxiliary.fill(None);
             copy_support_to_auxiliary(code, &support, received, &mut auxiliary);
             if let Some(coefficients) =
