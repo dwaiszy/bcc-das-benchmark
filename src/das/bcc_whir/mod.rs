@@ -5,12 +5,12 @@ use whir::cmdline_utils::AvailableHash;
 use whir::parameters::ProtocolParameters;
 use whir::protocols::params::DecodingRegime;
 
+use crate::BcParams;
 use crate::das::core::{
-    setup_roles, ErasureCode, FieldConfig, PcsConfig, ProtocolConfig, SetupArtifacts, SetupError,
+    ErasureCode, FieldConfig, PcsConfig, ProtocolConfig, SetupArtifacts, SetupError, setup_roles,
 };
 use crate::das::erasure_code::BccCode;
 use crate::pcs::whir::WhirLocalCodeScheme;
-use crate::BcParams;
 
 pub const SECURITY_BITS: usize = 128;
 pub type BccWhir = SetupArtifacts<BccCode<Fr>, WhirLocalCodeScheme>;

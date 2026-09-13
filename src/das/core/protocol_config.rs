@@ -27,12 +27,8 @@ pub enum CodeConfig {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PcsConfig {
-    Kzg {
-        strategy: KzgStrategy,
-    },
-    WhirJohnson {
-        security_bits: u16,
-    },
+    Kzg { strategy: KzgStrategy },
+    WhirJohnson { security_bits: u16 },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OpeningMode {

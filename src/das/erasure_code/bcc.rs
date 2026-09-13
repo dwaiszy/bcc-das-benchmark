@@ -1,10 +1,10 @@
 //! BCC erasure-code adapter for the generic DAS construction.
 //! It maps global BCC positions to arc-local polynomials and claims.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use ark_ff::FftField;
-use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, Polynomial};
+use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
 
 use crate::das::core::CodeConfig;
 use crate::das::core::{

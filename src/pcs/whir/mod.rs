@@ -753,9 +753,7 @@ mod tests {
     #[test]
     fn native_multi_point_proof_binds_every_claimed_value() {
         let pcs = WhirLocalCodeScheme::try_setup(7, &parameters(40)).unwrap();
-        let polynomial = UniPoly::from_coefficients_vec(
-            (1_u64..=8).map(Fr::from).collect(),
-        );
+        let polynomial = UniPoly::from_coefficients_vec((1_u64..=8).map(Fr::from).collect());
         let points = (11_u64..=14).map(Fr::from).collect::<Vec<_>>();
         let values = points
             .iter()

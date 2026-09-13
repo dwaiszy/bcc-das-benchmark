@@ -3,7 +3,7 @@
 use ark_bls12_381::Fr;
 
 use crate::das::core::{
-    setup_roles, ErasureCode, FieldConfig, PcsConfig, ProtocolConfig, SetupArtifacts, SetupError,
+    ErasureCode, FieldConfig, PcsConfig, ProtocolConfig, SetupArtifacts, SetupError, setup_roles,
 };
 use crate::das::erasure_code::Rs2dCode;
 use crate::pcs::kzg::{KzgArcPcs, KzgStrategy};

@@ -14,6 +14,16 @@ pub const OMEGAS: [usize; 5] = [4, 16, 64, 256, 1024];
 pub const BCC_SAMPLE_COUNT: usize = 6;
 pub const RS2D_SAMPLE_COUNT: usize = 8;
 pub const PROPOSER_THREADS: usize = 14;
+
+/// Return the configured proposer parallelism, defaulting to the standard
+/// benchmark thread count.
+pub fn proposer_threads() -> usize {
+    std::env::var("DAS_PROPOSER_THREADS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&value| value > 0)
+        .unwrap_or(PROPOSER_THREADS)
+}
 pub const WARMUP_RUNS: usize = 1;
 pub const MEASURED_RUNS: usize = 10;
 pub const SAMPLING_MODEL: &str = "unique_within_lc_shared_random_permutation";

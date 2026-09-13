@@ -286,8 +286,8 @@ impl KzgLocalCodeScheme {
 }
 
 mod coset;
-mod single_point;
 mod shplonk;
+mod single_point;
 pub use shplonk::MultipointProof;
 
 /// Fiat-Shamir point `u` for SHPLONK.

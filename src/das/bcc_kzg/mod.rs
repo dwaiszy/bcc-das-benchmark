@@ -2,12 +2,12 @@
 
 use ark_bls12_381::Fr;
 
+use crate::BcParams;
 use crate::das::core::{
-    setup_roles, ErasureCode, FieldConfig, PcsConfig, ProtocolConfig, SetupArtifacts, SetupError,
+    ErasureCode, FieldConfig, PcsConfig, ProtocolConfig, SetupArtifacts, SetupError, setup_roles,
 };
 use crate::das::erasure_code::BccCode;
 use crate::pcs::kzg::{KzgArcPcs, KzgStrategy};
-use crate::BcParams;
 
 pub type BccKzg = SetupArtifacts<BccCode<Fr>, KzgArcPcs>;
 

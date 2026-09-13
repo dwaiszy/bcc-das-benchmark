@@ -5,6 +5,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub use crate::das::core::errors::{
+    CodeError, ExtractionError, PrepareError, SetupError, VerificationError,
+};
+use crate::das::core::proof_serialization::ProofMeasurements;
+use crate::das::core::protocol_config::{CodeConfig, ProtocolConfig, ProtocolConfigDigest};
+use crate::pcs::{ArcPcs, OpeningPoint, VerificationTiming};
 use ark_ff::FftField;
 use ark_serialize::CanonicalSerialize;
 use rand::SeedableRng;
@@ -12,10 +18,6 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rayon::ThreadPool;
 use rayon::prelude::*;
-use crate::das::core::protocol_config::{CodeConfig, ProtocolConfig, ProtocolConfigDigest};
-use crate::das::core::proof_serialization::ProofMeasurements;
-pub use crate::das::core::errors::{CodeError, ExtractionError, PrepareError, SetupError, VerificationError};
-use crate::pcs::{ArcPcs, OpeningPoint, VerificationTiming};
 
 use crate::das::core::scalar_opening::{OpeningStrategy, ScalarOpening};
 
@@ -862,7 +864,7 @@ mod workflow_order_tests {
     use ark_bls12_381::Fr;
 
     use super::*;
-    use crate::pcs::kzg::KzgStrategy;
+    use crate::pcs::{PcsError, kzg::KzgStrategy};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Event {
