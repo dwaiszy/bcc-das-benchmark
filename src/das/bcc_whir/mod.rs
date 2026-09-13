@@ -28,7 +28,12 @@ pub fn parameters() -> ProtocolParameters {
     }
 }
 
-pub fn setup(params: BcParams, proposer_threads: usize) -> Result<BccWhir, SetupError> {
+/// Configure BCC+WHIR-JB with the caller's sampler-derived scalar sample count.
+pub fn setup(
+    params: BcParams,
+    sample_count: usize,
+    proposer_threads: usize,
+) -> Result<BccWhir, SetupError> {
     let code = BccCode::new(params)?;
     let pcs = WhirLocalCodeScheme::setup(params.k0() - 1, &parameters());
     let config = ProtocolConfig::new(
@@ -37,7 +42,7 @@ pub fn setup(params: BcParams, proposer_threads: usize) -> Result<BccWhir, Setup
         PcsConfig::WhirJohnson {
             security_bits: SECURITY_BITS as u16,
         },
-        6,
+        sample_count,
         [0x57; 32],
         proposer_threads,
     );

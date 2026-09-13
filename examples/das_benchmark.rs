@@ -8,9 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ark_bls12_381::Fr as BlsFr;
 use block_circulant_codes::BcParams;
 use block_circulant_codes::benchmark_config::{
-    MEASURED_RUNS, MasterInput, MasterSampleSchedule, MatchedParameters, OMEGAS, PROOF_ORDER,
-    PROOF_SCOPE_BCC, PROOF_SCOPE_RS2D, SAMPLING_MODEL, WARMUP_RUNS, fresh_seed, hex,
-    proposer_threads,
+    LIGHT_CLIENT_COUNT, MEASURED_RUNS, MasterInput, MasterSampleSchedule, MatchedParameters,
+    OMEGAS, PROOF_ORDER, PROOF_SCOPE_BCC, PROOF_SCOPE_RS2D, SAMPLING_MODEL,
+    SAMPLING_SOUNDNESS_BITS, WARMUP_RUNS, fresh_seed, hex, proposer_threads,
 };
 use block_circulant_codes::das::{
     BlockId, ErasureCode, PreparedBlock, SetupArtifacts, bcc_kzg, bcc_whir, rs2d_kzg,
@@ -81,7 +81,7 @@ impl Row {
                 "\"scheme\":\"{}\",\"field\":\"{}\",\"pcs\":\"{}\",\"security_target_bits\":{},",
                 "\"security_parameters\":\"{}\",\"profile_status\":\"{}\",\"profile_id\":\"{}\",\"setup_id\":\"{}\",",
                 "\"omega\":{},\"k\":{},\"n\":{},\"mu\":{},\"rho\":{},\"local_k\":{},\"local_n\":{},",
-                "\"opening_profile\":\"paper-scalar\",\"sampling_model\":\"{}\",\"sample_count\":{},\"sample_indices\":[{}],",
+                "\"opening_profile\":\"paper-scalar\",\"sampling_model\":\"{}\",\"sampling_light_clients\":{},\"sampling_failure_bits\":{},\"reception_threshold\":{},\"sample_count\":{},\"sample_indices\":[{}],",
                 "\"sample_seed\":\"{}\",\"sample_schedule_hash\":\"{}\",\"input_seed\":\"{}\",\"input_hash\":\"{}\",",
                 "\"proposer_threads\":{},\"verifier_threads\":{},\"proof_encoding\":\"{}\",\"commitment_count\":{},\"proof_scope\":\"{}\",",
                 "\"proof_order\":\"{}\",\"proposer_proof_count\":{},\"setup_ms\":{:.6},\"encode_ms\":{:.6},",
@@ -116,6 +116,13 @@ impl Row {
                 self.p.rs2d_n0
             },
             SAMPLING_MODEL,
+            LIGHT_CLIENT_COUNT,
+            SAMPLING_SOUNDNESS_BITS,
+            if self.meta.proof_scope == PROOF_SCOPE_BCC {
+                self.p.bcc_reception_threshold()
+            } else {
+                self.p.rs2d_reception_threshold()
+            },
             self.samples.len(),
             ix,
             self.sample_seed,
@@ -256,14 +263,17 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
     let input = MasterInput::generate(p.k, fresh_seed());
     let bls = input.embed::<BlsFr>();
     let block = BlockId::new(fresh_seed());
-    let schedule = MasterSampleSchedule::generate(p.n, fresh_seed());
+    let bcc_sample_count = p.bcc_sample_count();
+    let rs2d_sample_count = p.rs2d_sample_count();
+    let schedule =
+        MasterSampleSchedule::generate(p.n, bcc_sample_count.max(rs2d_sample_count), fresh_seed());
     let mut rows = Vec::new();
     // A scheme is fully processed and dropped before the next begins.  This
     // both matches the benchmark contract's independent-scheme timing and
     // prevents four complete opening oracles being resident at once.
     if selected("bcc-kzg") {
         let started = Instant::now();
-        let a = bcc_kzg::setup(bp, proposer_threads())?;
+        let a = bcc_kzg::setup(bp, bcc_sample_count, proposer_threads())?;
         let s = started.elapsed();
         let committed = a.proposer.commit(block, &bls)?;
         let encoded = a.proposer.encode(committed)?;
@@ -284,7 +294,7 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
                 verifier_threads: 1,
                 proof_encoding: "compressed-g1-witness",
             },
-            schedule.bcc_indices(),
+            schedule.prefix(bcc_sample_count),
             &input,
             &schedule,
             run,
@@ -292,7 +302,7 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
     }
     if selected("bcc-whir") {
         let started = Instant::now();
-        let a = bcc_whir::setup(bp, proposer_threads())?;
+        let a = bcc_whir::setup(bp, bcc_sample_count, proposer_threads())?;
         let s = started.elapsed();
         let committed = a.proposer.commit(block, &bls)?;
         let encoded = a.proposer.encode(committed)?;
@@ -313,7 +323,7 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
                 verifier_threads: 1,
                 proof_encoding: "zstd-level-3",
             },
-            schedule.bcc_indices(),
+            schedule.prefix(bcc_sample_count),
             &input,
             &schedule,
             run,
@@ -321,7 +331,7 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
     }
     if selected("rs2d-kzg") {
         let started = Instant::now();
-        let a = rs2d_kzg::setup(p.rs2d_n0, p.rs2d_k0, proposer_threads())?;
+        let a = rs2d_kzg::setup(p.rs2d_n0, p.rs2d_k0, rs2d_sample_count, proposer_threads())?;
         let s = started.elapsed();
         let committed = a.proposer.commit(block, &bls)?;
         let encoded = a.proposer.encode(committed)?;
@@ -342,7 +352,7 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
                 verifier_threads: 1,
                 proof_encoding: "compressed-g1-witness",
             },
-            schedule.indices(),
+            schedule.prefix(rs2d_sample_count),
             &input,
             &schedule,
             run,

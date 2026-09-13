@@ -11,7 +11,12 @@ use crate::pcs::kzg::{KzgArcPcs, KzgStrategy};
 
 pub type BccKzg = SetupArtifacts<BccCode<Fr>, KzgArcPcs>;
 
-pub fn setup(params: BcParams, proposer_threads: usize) -> Result<BccKzg, SetupError> {
+/// Configure BCC+KZG with the caller's sampler-derived scalar sample count.
+pub fn setup(
+    params: BcParams,
+    sample_count: usize,
+    proposer_threads: usize,
+) -> Result<BccKzg, SetupError> {
     let code = BccCode::new(params)?;
     let mut rng = ark_std::test_rng();
     let pcs = KzgArcPcs::setup_fk20(params.k0() - 1, params.num_eval_points(), &mut rng)?;
@@ -21,7 +26,7 @@ pub fn setup(params: BcParams, proposer_threads: usize) -> Result<BccKzg, SetupE
         PcsConfig::Kzg {
             strategy: KzgStrategy::Fk20,
         },
-        6,
+        sample_count,
         [0x4b; 32],
         proposer_threads,
     );

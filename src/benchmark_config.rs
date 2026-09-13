@@ -11,8 +11,11 @@ use rand::{RngCore, SeedableRng};
 /// (256, 1024), (1024, 4096), (4096, 16384)`.  Each point also has a
 /// square rate-1/4 2D-RS baseline.
 pub const OMEGAS: [usize; 5] = [4, 16, 64, 256, 1024];
-pub const BCC_SAMPLE_COUNT: usize = 6;
-pub const RS2D_SAMPLE_COUNT: usize = 8;
+/// Section 6 evaluates the sampler-quality bound for this many independent
+/// light clients.
+pub const LIGHT_CLIENT_COUNT: usize = 1_000;
+/// Target sampler failure probability is at most `2^-SAMPLING_SOUNDNESS_BITS`.
+pub const SAMPLING_SOUNDNESS_BITS: usize = 128;
 pub const PROPOSER_THREADS: usize = 14;
 
 /// Return the configured proposer parallelism, defaulting to the standard
@@ -84,6 +87,58 @@ impl MatchedParameters {
     pub fn rs2d_proof_count(self) -> usize {
         self.rs2d_n0 * self.rs2d_n0
     }
+
+    /// BCC reception threshold `t = n - 2 rho` from Section 6.
+    pub fn bcc_reception_threshold(self) -> usize {
+        self.n - 2 * self.rho
+    }
+
+    /// Minimum distance of the square 2D-RS product code.
+    pub fn rs2d_minimum_distance(self) -> usize {
+        let row_distance = self.rs2d_n0 - self.rs2d_k0 + 1;
+        row_distance * row_distance
+    }
+
+    /// 2D-RS reception threshold `t = n - d + 1` from Section 6.
+    pub fn rs2d_reception_threshold(self) -> usize {
+        self.n - self.rs2d_minimum_distance() + 1
+    }
+
+    /// Required scalar samples for either BCC PCS instantiation.
+    pub fn bcc_sample_count(self) -> usize {
+        minimum_sample_count(self.n, self.bcc_reception_threshold())
+    }
+
+    /// Required scalar samples for the 2D-RS+KZG baseline.
+    pub fn rs2d_sample_count(self) -> usize {
+        minimum_sample_count(self.n, self.rs2d_reception_threshold())
+    }
+}
+
+/// Section 6's with-replacement sampler bound:
+///
+/// `ceil((lambda ln 2 + ln binom(n, t - 1)) / (ell ln(n / (t - 1))))`.
+///
+/// `ell` is [`LIGHT_CLIENT_COUNT`] and `lambda` is
+/// [`SAMPLING_SOUNDNESS_BITS`].
+pub fn minimum_sample_count(n: usize, reception_threshold: usize) -> usize {
+    assert!(n > 1, "codeword length must exceed one");
+    assert!(
+        (2..=n).contains(&reception_threshold),
+        "reception threshold must lie in 2..=n"
+    );
+    let withheld_limit = reception_threshold - 1;
+    let numerator =
+        (SAMPLING_SOUNDNESS_BITS as f64) * std::f64::consts::LN_2 + ln_binomial(n, withheld_limit);
+    let denominator = (LIGHT_CLIENT_COUNT as f64) * ((n as f64) / (withheld_limit as f64)).ln();
+    (numerator / denominator).ceil() as usize
+}
+
+fn ln_binomial(n: usize, k: usize) -> f64 {
+    let k = k.min(n - k);
+    (1..=k)
+        .map(|i| ((n - k + i) as f64).ln() - (i as f64).ln())
+        .sum()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,11 +181,11 @@ pub struct MasterSampleSchedule {
 }
 
 impl MasterSampleSchedule {
-    pub fn generate(n: usize, seed: [u8; 32]) -> Self {
-        assert!(n >= RS2D_SAMPLE_COUNT);
+    pub fn generate(n: usize, sample_count: usize, seed: [u8; 32]) -> Self {
+        assert!(sample_count > 0 && sample_count <= n);
         let mut permutation = (0..n).collect::<Vec<_>>();
         permutation.shuffle(&mut StdRng::from_seed(seed));
-        let indices = permutation[..RS2D_SAMPLE_COUNT].to_vec();
+        let indices = permutation[..sample_count].to_vec();
         let hash = hash_schedule(n, &indices);
         Self {
             indices,
@@ -143,8 +198,9 @@ impl MasterSampleSchedule {
         &self.indices
     }
 
-    pub fn bcc_indices(&self) -> &[usize] {
-        &self.indices[..BCC_SAMPLE_COUNT]
+    pub fn prefix(&self, sample_count: usize) -> &[usize] {
+        assert!(sample_count <= self.indices.len());
+        &self.indices[..sample_count]
     }
 
     pub fn seed_hex(&self) -> String {
@@ -207,11 +263,27 @@ mod tests {
     }
 
     #[test]
+    fn section_six_sample_counts_match_all_benchmark_geometries() {
+        let actual = OMEGAS.map(MatchedParameters::rate_one_quarter);
+        assert_eq!(
+            actual.map(MatchedParameters::bcc_sample_count),
+            [1, 1, 2, 6, 24]
+        );
+        assert_eq!(
+            actual.map(MatchedParameters::rs2d_sample_count),
+            [1, 1, 3, 8, 32]
+        );
+        assert_eq!(actual[3].bcc_reception_threshold(), 2560);
+        assert_eq!(actual[3].rs2d_reception_threshold(), 3008);
+    }
+
+    #[test]
     fn schedule_is_unique_replayable_and_prefix_shared() {
-        let first = MasterSampleSchedule::generate(4096, [7; 32]);
-        let replay = MasterSampleSchedule::generate(4096, [7; 32]);
+        let parameters = MatchedParameters::rate_one_quarter(256);
+        let first = MasterSampleSchedule::generate(4096, parameters.rs2d_sample_count(), [7; 32]);
+        let replay = MasterSampleSchedule::generate(4096, parameters.rs2d_sample_count(), [7; 32]);
         assert_eq!(first, replay);
-        assert_eq!(first.indices().len(), RS2D_SAMPLE_COUNT);
+        assert_eq!(first.indices().len(), parameters.rs2d_sample_count());
         assert_eq!(
             first
                 .indices()
@@ -219,17 +291,20 @@ mod tests {
                 .copied()
                 .collect::<BTreeSet<_>>()
                 .len(),
-            RS2D_SAMPLE_COUNT
+            parameters.rs2d_sample_count()
         );
-        assert_eq!(first.bcc_indices(), &first.indices()[..BCC_SAMPLE_COUNT]);
+        assert_eq!(
+            first.prefix(parameters.bcc_sample_count()),
+            &first.indices()[..6]
+        );
     }
 
     #[test]
     fn light_client_schedules_have_no_global_disjointness_requirement() {
         // Scheduling is stateless: two clients selecting the same seed may
         // overlap completely, and neither schedule is rejected or changed.
-        let client_a = MasterSampleSchedule::generate(64, [19; 32]);
-        let client_b = MasterSampleSchedule::generate(64, [19; 32]);
+        let client_a = MasterSampleSchedule::generate(64, 1, [19; 32]);
+        let client_b = MasterSampleSchedule::generate(64, 1, [19; 32]);
         assert_eq!(client_a.indices(), client_b.indices());
     }
 

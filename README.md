@@ -89,6 +89,11 @@ is reported separately as `header_bytes`, and is also included in the
 `light_client_download_bytes` total together with sampled values, response
 metadata, and opening proofs.
 
+For each code geometry, the scalar sample count is derived from Section 6's
+with-replacement sampler bound using 1,000 independent light clients and a
+failure target of `2^-128`; it is not fixed at six BCC samples or eight 2D-RS
+samples outside the paper's `(k, n) = (1024, 4096)` setting.
+
 Tests are organized around the same public workflow for every scheme:
 
 ```text
