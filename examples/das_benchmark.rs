@@ -72,7 +72,9 @@ impl Row {
             .map_or_else(|| "null".into(), |v| v.to_string());
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
         let total = self.encode + self.commit + self.open;
-        let download = self.data_bytes + self.metadata_bytes + self.proof_bytes;
+        // A verifier needs the published commitment metadata plus the sampled
+        // values, response metadata, and opening proofs.
+        let download = self.header_bytes + self.data_bytes + self.metadata_bytes + self.proof_bytes;
         format!(
             concat!(
                 "{{\"schema_version\":\"bcc-das-benchmark-v3\",\"run_id\":{},\"warmup\":false,\"timestamp_unix_seconds\":{},\"git_commit\":\"{}\",",
