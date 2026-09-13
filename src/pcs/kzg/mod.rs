@@ -167,7 +167,12 @@ impl ArcPcs<Fr> for KzgArcPcs {
     }
 
     fn proof_bytes(&self, proof: &Self::Proof) -> usize {
-        proof.compressed_size()
+        // KzgArcPcs always creates non-hiding openings (`random_v == None`).
+        // Its scalar-proof payload is therefore only the compressed G1 witness;
+        // the Arkworks Option tag is an in-memory serialization detail, not a
+        // field transmitted by this DAS response format.
+        debug_assert!(proof.random_v.is_none());
+        proof.w.compressed_size()
     }
 }
 
