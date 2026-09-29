@@ -72,6 +72,20 @@ impl<F: FftField> FftTwoDRsCode<F> {
         self.domain_n0.element(idx)
     }
 
+    /// Coefficients expressing an encoded row as a linear combination of the
+    /// k0 source rows.  This lets a PCS derive commitments for extended rows
+    /// homomorphically without publishing those commitments.
+    pub fn source_row_weights(&self, row: usize) -> Vec<F> {
+        assert!(row < self.n0);
+        (0..self.k0)
+            .map(|source| {
+                let mut basis = vec![F::zero(); self.k0];
+                basis[source] = F::one();
+                self.extend(&basis)[row]
+            })
+            .collect()
+    }
+
     /// Extend `k0` known values (interpreted as evaluations over
     /// `domain_k0`, in `domain_k0`'s own natural order) to all `n0`
     /// `domain_n0` evaluations, via IFFT(k0) + FFT(n0).
@@ -122,6 +136,22 @@ impl<F: FftField> FftTwoDRsCode<F> {
                     .map(|coefficient| coefficient_columns[coefficient][row])
                     .collect()
             })
+            .collect())
+    }
+
+    /// Polynomials for the original k0 source rows before the vertical
+    /// extension. These are the only row polynomials committed by the
+    /// protocol; extended-row commitments are linear combinations of them.
+    pub fn source_row_polynomials(&self, message: &[F]) -> Result<Vec<Vec<F>>, BcError> {
+        if message.len() != self.k() {
+            return Err(BcError::BadMessageLength {
+                got: message.len(),
+                expected: self.k(),
+            });
+        }
+        Ok(message
+            .par_chunks_exact(self.k0)
+            .map(|row| self.domain_k0.ifft(row))
             .collect())
     }
 

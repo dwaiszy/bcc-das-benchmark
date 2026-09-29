@@ -1,6 +1,7 @@
 //! SHPLONK arbitrary-point multiproofs.
 
 use super::*;
+use ark_serialize::CanonicalDeserialize;
 
 impl KzgLocalCodeScheme {
     /// Open points `S` with `I` interpolating the values and `Z_S=prod(X-z)`.
@@ -70,7 +71,29 @@ pub struct MultipointProof {
 }
 
 impl MultipointProof {
+    pub fn expected_serialized_size() -> usize {
+        2 * G1Affine::zero().compressed_size()
+    }
+
     pub fn compressed_size(&self) -> usize {
         self.w1.compressed_size() + self.w2.compressed_size()
+    }
+
+    pub fn serialized_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.compressed_size());
+        self.w1
+            .serialize_compressed(&mut bytes)
+            .expect("serialize SHPLONK witness");
+        self.w2
+            .serialize_compressed(&mut bytes)
+            .expect("serialize SHPLONK witness");
+        bytes
+    }
+
+    pub fn from_serialized_bytes(bytes: &[u8]) -> Option<Self> {
+        let mut reader = bytes;
+        let w1 = G1Affine::deserialize_compressed(&mut reader).ok()?;
+        let w2 = G1Affine::deserialize_compressed(&mut reader).ok()?;
+        reader.is_empty().then_some(Self { w1, w2 })
     }
 }

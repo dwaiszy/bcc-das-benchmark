@@ -5,7 +5,32 @@ edition = "2024"
 
 [dependencies]
 ark-bls12-381 = "0.5.0"
+ark-ec = "0.5.0"
 ark-ff = "0.5.0"
 ark-poly = "0.5.0"
+ark-poly-commit = "0.5.0"
+ark-serialize = "0.5.0"
+ark-std = "0.5.0"
 rayon = "1.10"
+rand = "0.8"
+sha2 = "0.10"
 thiserror = "2.0.19"
+blake3 = "=1.8.3"
+zstd = "0.13"
+whir = { git = "https://github.com/worldfnd/whir.git", rev = "92652ca01e215548c98e11834e110c43994b94c1" }
+frida-poc = { git = "https://github.com/NethermindEth/Frida-poc", rev = "b5282b1e2d59d1f6ab7278c86b4badb9bbd52adb" }
+
+[dev-dependencies]
+merlin = "1.3.0"
+
+[[example]]
+name = "bcc_whir_jb_scalar_opening"
+path = "src/das/bcc_whir/scalar_opening.rs"
+
+[[example]]
+name = "das_benchmark"
+path = "benchmarks/das_benchmark.rs"
+
+[[example]]
+name = "frida_benchmark"
+path = "benchmarks/frida_benchmark.rs"

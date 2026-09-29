@@ -1,21 +1,25 @@
-//! Shared commit, encode, open, sample, disperse, and verify lifecycle.
+//! Shared commit, encode, open, sample, disperse, and verify.
 //! This file keeps proposer and light-client roles independent of the code or PCS.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ark_ff::FftField;
-use ark_serialize::CanonicalSerialize;
+pub use crate::das::core::errors::{
+    CodeError, ExtractionError, PrepareError, SetupError, VerificationError,
+};
+use crate::das::core::proof_serialization::ProofMeasurements;
+use crate::das::core::protocol_config::{CodeConfig, ProtocolConfig, ProtocolConfigDigest};
+use crate::pcs::{ArcPcs, OpeningPoint, VerificationTiming};
+use ark_ff::{FftField, Zero};
+use ark_serialize::{CanonicalSerialize, Compress};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rayon::ThreadPool;
 use rayon::prelude::*;
-use super::protocol_profile::{CodeProfile, ProtocolProfile, ProtocolProfileId};
-use super::proof_serialization::ProofMeasurements;
-pub use super::errors::{CodeError, ExtractionError, PrepareError, SetupError, VerificationError};
-use crate::pcs::{ArcPcs, OpeningPoint, PcsError, VerificationTiming};
+
+use crate::das::core::scalar_opening::{OpeningStrategy, ScalarOpening};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlockId([u8; 32]);
@@ -102,7 +106,7 @@ impl<F: Copy> EvaluationClaim<F> {
     pub const fn value(&self) -> F {
         self.value
     }
-    fn opening_point(&self) -> OpeningPoint<F> {
+    pub(crate) fn opening_point(&self) -> OpeningPoint<F> {
         OpeningPoint::new(self.point, self.domain_index)
     }
 }
@@ -188,20 +192,42 @@ impl<F> EncodedBlock<F> {
 
 pub trait ErasureCode: Clone + Send + Sync + 'static {
     type Field: FftField + CanonicalSerialize + Send + Sync + 'static;
-    fn profile(&self) -> CodeProfile;
+    fn profile(&self) -> CodeConfig;
     fn message_len(&self) -> usize;
     fn codeword_len(&self) -> usize;
     fn local_code_count(&self) -> usize;
     fn local_dimension(&self) -> usize;
     fn local_code_len(&self) -> usize;
-    /// Convert original data into the local degree-`< k0` polynomials that
-    /// are committed before erasure-code evaluation.
+    /// Number of PCS commitments included in the public header. BCC publishes
+    /// one commitment per local arc, while 2D-RS publishes only the source-row
+    /// commitments and derives encoded-row commitments from them homomorphically.
+    fn published_commitment_count(&self) -> usize {
+        self.local_code_count()
+    }
+    /// Optional polynomial coefficient vectors used to form the header commitments.
+    /// If absent, each local polynomial is committed directly.
+    fn header_polynomials(
+        &self,
+        _message: &[Self::Field],
+        _polynomials: &PolynomialBlock<Self::Field>,
+    ) -> Result<Option<Vec<Vec<Self::Field>>>, CodeError> {
+        Ok(None)
+    }
+    /// Return the information needed to derive a local-code commitment from the
+    /// header commitments. If unavailable, the local-code commitment is read
+    /// directly from the header.
+    fn header_commitment_weights(&self, _local_code: usize) -> Option<Vec<Self::Field>> {
+        None
+    }
+    /// Convert the input message into local degree-`< k0` polynomials before
+    /// encoding the message. The PCS commitment function then commits to these
+    /// polynomials.
     fn polynomialize(
         &self,
         message: &[Self::Field],
     ) -> Result<PolynomialBlock<Self::Field>, CodeError>;
-    /// Evaluate an already polynomialized block into encoded symbols and
-    /// local claims. The polynomial block is exactly what the PCS committed.
+    /// Encode the committed local polynomials to produce the encoded symbols and
+    /// their evaluation claims.
     fn encode_polynomials(
         &self,
         polynomials: &PolynomialBlock<Self::Field>,
@@ -220,49 +246,28 @@ pub trait ErasureCode: Clone + Send + Sync + 'static {
     fn decode(&self, received: &[Option<Self::Field>]) -> Result<Vec<Self::Field>, CodeError>;
 }
 
-/// Internal extension point for opening profiles. Scalar-opening is the only
-/// active profile; complete-arc behavior is intentionally absent.
-trait OpeningProfile<F, P>
-where
-    F: FftField,
-    P: ArcPcs<F>,
-{
-    fn precompute(
-        pcs: &P,
-        state: &P::ProverState,
-        claims: &[EvaluationClaim<F>],
-    ) -> Result<Vec<P::Proof>, PcsError>;
-}
-
-struct PaperScalarOpening;
-
-impl<F, P> OpeningProfile<F, P> for PaperScalarOpening
-where
-    F: FftField,
-    P: ArcPcs<F>,
-{
-    fn precompute(
-        pcs: &P,
-        state: &P::ProverState,
-        claims: &[EvaluationClaim<F>],
-    ) -> Result<Vec<P::Proof>, PcsError> {
-        let points = claims
-            .iter()
-            .map(EvaluationClaim::opening_point)
-            .collect::<Vec<_>>();
-        let values = claims
-            .iter()
-            .map(EvaluationClaim::value)
-            .collect::<Vec<_>>();
-        pcs.precompute_openings_with_values(state, &points, &values)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PreparationMetrics {
     pub encode: Duration,
     pub commit: Duration,
     pub open: Duration,
+    pub opening: OpeningBreakdown,
+}
+
+    /// Records the time and memory used to prepare all opening proofs before
+    /// clients sample positions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OpeningBreakdown {
+    pub group_mapping: Duration,
+    pub point_preparation: Duration,
+    pub state_clone_or_rebuild: Duration,
+    pub evaluation_check: Duration,
+    pub whir_cryptographic_prove: Duration,
+    pub proof_serialization: Duration,
+    pub proof_compression: Duration,
+    pub peak_or_estimated_working_memory_bytes: usize,
+    pub uncompressed_proof_oracle_bytes: usize,
+    pub compressed_proof_oracle_bytes: usize,
 }
 
 impl PreparationMetrics {
@@ -273,7 +278,7 @@ impl PreparationMetrics {
 
 pub struct ConsensusHeader<C> {
     block_id: BlockId,
-    profile_id: ProtocolProfileId,
+    profile_id: ProtocolConfigDigest,
     commitments: Vec<C>,
 }
 
@@ -281,7 +286,7 @@ impl<C> ConsensusHeader<C> {
     pub const fn block_id(&self) -> BlockId {
         self.block_id
     }
-    pub const fn profile_id(&self) -> ProtocolProfileId {
+    pub const fn profile_id(&self) -> ProtocolConfigDigest {
         self.profile_id
     }
     pub fn local_commitments(&self) -> &[C] {
@@ -313,6 +318,18 @@ impl<F: Copy, Proof: Clone> DispersalSet<F, Proof> {
     }
     pub fn local_opening_counts(&self) -> impl Iterator<Item = usize> + '_ {
         self.local_oracles.iter().map(|oracle| oracle.entries.len())
+    }
+
+    pub fn proof_oracle_bytes<P>(&self, pcs: &P) -> usize
+    where
+        F: ark_ff::FftField,
+        P: ArcPcs<F, Proof = Proof>,
+    {
+        self.local_oracles
+            .iter()
+            .flat_map(|oracle| oracle.entries.iter())
+            .map(|entry| pcs.proof_bytes(&entry.proof))
+            .sum()
     }
 
     pub fn respond(
@@ -348,8 +365,6 @@ pub struct PreparedBlock<F, C, Proof> {
     pub metrics: PreparationMetrics,
 }
 
-/// Typestate after the original data polynomials have been committed, but
-/// before the erasure code has been evaluated.
 pub struct CommittedBlock<F, C, State> {
     header: ConsensusHeader<C>,
     polynomials: PolynomialBlock<F>,
@@ -357,9 +372,8 @@ pub struct CommittedBlock<F, C, State> {
     commit: Duration,
 }
 
-/// Typestate after commitment and encoding, ready for scalar-opening
-/// generation. Keeping the PCS states paired with the encoded claims makes it
-/// impossible to open a polynomial other than the one already committed.
+/// State after commitment and erasure encoding. It retains the PCS state and
+/// the corresponding claims needed to generate scalar opening proofs.
 pub struct EncodedCommittedBlock<F, C, State> {
     header: ConsensusHeader<C>,
     encoded: EncodedBlock<F>,
@@ -389,7 +403,7 @@ struct PlannedSample {
 #[derive(Clone, Debug)]
 pub struct SamplePlan {
     block_id: BlockId,
-    profile_id: ProtocolProfileId,
+    profile_id: ProtocolConfigDigest,
     indices: Vec<usize>,
     samples: Vec<PlannedSample>,
 }
@@ -433,17 +447,27 @@ impl<F, Proof> SampleResponses<F, Proof> {
     pub fn get(&self, index: usize) -> Option<&SampleResponse<F, Proof>> {
         self.responses.get(index)
     }
+
+    pub fn authenticated_values(&self) -> Vec<(usize, F)>
+    where
+        F: Copy,
+    {
+        self.responses
+            .iter()
+            .map(|response| (response.global_index, response.value))
+            .collect()
+    }
 }
 
-pub struct AuthenticatedLocalCommitment<'a, C> {
+pub struct AuthenticatedLocalCommitment<C> {
     local_code: LocalCodeId,
-    commitment: &'a C,
-    profile_id: ProtocolProfileId,
+    commitment: C,
+    profile_id: ProtocolConfigDigest,
 }
 
 pub struct VerifiedTranscript<F> {
     block_id: BlockId,
-    profile_id: ProtocolProfileId,
+    profile_id: ProtocolConfigDigest,
     indices: Vec<usize>,
     samples: Vec<(usize, F)>,
 }
@@ -464,7 +488,7 @@ where
 {
     code: C,
     pcs: Arc<P>,
-    profile: ProtocolProfile,
+    profile: ProtocolConfig,
     pool: Arc<ThreadPool>,
 }
 
@@ -475,7 +499,7 @@ where
 {
     code: C,
     pcs: Arc<P>,
-    profile: ProtocolProfile,
+    profile: ProtocolConfig,
 }
 
 pub struct SetupArtifacts<C, P>
@@ -490,7 +514,7 @@ where
 pub fn setup_roles<C, P>(
     code: C,
     pcs: P,
-    profile: ProtocolProfile,
+    profile: ProtocolConfig,
     threads: usize,
 ) -> Result<SetupArtifacts<C, P>, SetupError>
 where
@@ -498,10 +522,11 @@ where
     P: ArcPcs<C::Field>,
 {
     if threads == 0 || profile.proposer_threads() != threads || profile.code() != code.profile() {
-        return Err(SetupError::ProfileMismatch);
+        return Err(SetupError::ConfigMismatch);
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
+        .stack_size(16 * 1024 * 1024)
         .thread_name(|index| format!("das-proposer-{index}"))
         .build()
         .map_err(|_| SetupError::ThreadPool)?;
@@ -525,8 +550,12 @@ where
     pub fn message_len(&self) -> usize {
         self.code.message_len()
     }
-    pub fn profile(&self) -> &ProtocolProfile {
+    pub fn profile(&self) -> &ProtocolConfig {
         &self.profile
+    }
+
+    pub fn pcs(&self) -> &P {
+        self.pcs.as_ref()
     }
 
     pub fn commit(
@@ -540,9 +569,8 @@ where
                 expected: self.code.message_len(),
             });
         }
-        // The commitment stage includes interpolation of the original data:
-        // no erasure-coded value is evaluated before every source polynomial
-        // has been passed to the PCS commitment interface.
+        // The proposer constructs and commits to the local polynomials before
+        // evaluating them to produce the encoded codeword symbols.
         let started = Instant::now();
         let polynomials = self.pool.install(|| self.code.polynomialize(message))?;
         let committed = self.pool.install(|| {
@@ -554,12 +582,24 @@ where
         })?;
         let commit = started.elapsed();
         let (commitments, states): (Vec<_>, Vec<_>) = committed.into_iter().unzip();
+        let header_commitments = match self.code.header_polynomials(message, &polynomials)? {
+            Some(coefficients) => self.pool.install(|| {
+                coefficients
+                    .par_iter()
+                    .map(|coefficients| self.pcs.commit(coefficients).map(|(commitment, _)| commitment))
+                    .collect::<Result<Vec<_>, _>>()
+            })?,
+            None => commitments.clone(),
+        };
+        if header_commitments.len() != self.code.published_commitment_count() {
+            return Err(PrepareError::Code(CodeError::InvalidPolynomialShape));
+        }
 
         Ok(CommittedBlock {
             header: ConsensusHeader {
                 block_id,
                 profile_id: self.profile.id(),
-                commitments,
+                commitments: header_commitments,
             },
             polynomials,
             states,
@@ -597,7 +637,7 @@ where
                 .par_iter()
                 .zip(encoded.encoded.local_codes())
                 .map(|(state, local)| {
-                    PaperScalarOpening::precompute(self.pcs.as_ref(), state, local.claims())
+                    ScalarOpening::precompute(self.pcs.as_ref(), state, local.claims())
                 })
                 .collect::<Result<Vec<_>, _>>()
         })?;
@@ -625,13 +665,13 @@ where
                 encode: encoded.encode,
                 commit: encoded.commit,
                 open,
+                opening: OpeningBreakdown::default(),
             },
         })
     }
 
-    /// Convenience wrapper for the ordered commit -> encode -> open
-    /// lifecycle. The typed stage methods remain available to callers and to
-    /// benchmarks that want the ordering to be explicit.
+    /// Run the proposer workflow in order: commit the local polynomials, encode the
+    /// message, and generate the opening proofs.
     pub fn prepare(
         &self,
         block_id: BlockId,
@@ -648,7 +688,7 @@ where
     C: ErasureCode,
     P: ArcPcs<C::Field>,
 {
-    pub fn profile(&self) -> &ProtocolProfile {
+    pub fn profile(&self) -> &ProtocolConfig {
         &self.profile
     }
     pub fn sample_count(&self) -> usize {
@@ -667,11 +707,7 @@ where
                 .iter()
                 .map(|commitment| self.pcs.commitment_bytes(commitment))
                 .sum::<usize>();
-        let sample_data_bytes = responses
-            .responses
-            .iter()
-            .map(|response| response.value.compressed_size())
-            .sum();
+        let sample_data_bytes = responses.len() * C::Field::zero().serialized_size(Compress::Yes);
         let verify_proof_bytes = responses
             .responses
             .iter()
@@ -695,9 +731,9 @@ where
         header: &ConsensusHeader<P::Commitment>,
     ) -> Result<(), VerificationError> {
         if header.profile_id != self.profile.id() {
-            return Err(VerificationError::WrongProfile);
+            return Err(VerificationError::WrongConfig);
         }
-        if header.commitments.len() != self.code.local_code_count() {
+        if header.commitments.len() != self.code.published_commitment_count() {
             return Err(VerificationError::WrongCommitmentCount);
         }
         Ok(())
@@ -749,20 +785,27 @@ where
         })
     }
 
-    pub fn commitment_for<'a>(
+    pub fn commitment_for(
         &self,
-        header: &'a ConsensusHeader<P::Commitment>,
+        header: &ConsensusHeader<P::Commitment>,
         global_index: usize,
-    ) -> Result<AuthenticatedLocalCommitment<'a, P::Commitment>, VerificationError> {
+    ) -> Result<AuthenticatedLocalCommitment<P::Commitment>, VerificationError> {
         self.validate_header(header)?;
         let local = self
             .code
             .canonical_position(global_index)
             .map_err(|_| VerificationError::PositionOutOfRange)?;
-        let commitment = header
-            .commitments
-            .get(local.local_code().get())
-            .ok_or(VerificationError::WrongCommitmentCount)?;
+        let commitment = match self.code.header_commitment_weights(local.local_code().get()) {
+            Some(weights) => self
+                .pcs
+                .derive_commitment(&header.commitments, &weights)
+                .map_err(|_| VerificationError::WrongCommitmentCount)?,
+            None => header
+                .commitments
+                .get(local.local_code().get())
+                .cloned()
+                .ok_or(VerificationError::WrongCommitmentCount)?,
+        };
         Ok(AuthenticatedLocalCommitment {
             local_code: local.local_code(),
             commitment,
@@ -772,11 +815,11 @@ where
 
     pub fn verify_sample(
         &self,
-        authenticated: AuthenticatedLocalCommitment<'_, P::Commitment>,
+        authenticated: AuthenticatedLocalCommitment<P::Commitment>,
         response: &SampleResponse<C::Field, P::Proof>,
     ) -> Result<(), VerificationError> {
         if authenticated.profile_id != self.profile.id() {
-            return Err(VerificationError::WrongProfile);
+            return Err(VerificationError::WrongConfig);
         }
         let claim = self
             .code
@@ -787,7 +830,7 @@ where
         }
         self.pcs
             .verify(
-                authenticated.commitment,
+                &authenticated.commitment,
                 claim.point(),
                 claim.value(),
                 &response.proof,
@@ -818,32 +861,46 @@ where
         {
             return Err(VerificationError::PlanMismatch);
         }
+        let verification_started = Instant::now();
+        let mut commitment_selection = Duration::ZERO;
+        let mut evaluation_point = Duration::ZERO;
+        let mut batch_preparation = Duration::ZERO;
         let mut samples = Vec::with_capacity(plan.samples.len());
-        let mut entries = Vec::with_capacity(plan.samples.len());
+        let mut selected_commitments = Vec::with_capacity(plan.samples.len());
+        let mut claims = Vec::with_capacity(plan.samples.len());
         for (planned, response) in plan.samples.iter().zip(&responses.responses) {
             if response.global_index != planned.global_index {
                 return Err(VerificationError::PlanMismatch);
             }
+            let started = Instant::now();
             let commitment = self.commitment_for(header, response.global_index)?;
+            commitment_selection += started.elapsed();
+            let started = Instant::now();
             let claim = self
                 .code
                 .canonical_claim(response.global_index, response.value)
                 .map_err(|_| VerificationError::PositionOutOfRange)?;
+            evaluation_point += started.elapsed();
             if claim.local_position().local_code() != commitment.local_code {
                 return Err(VerificationError::WrongCommitment);
             }
-            entries.push((
-                commitment.commitment,
-                claim.point(),
-                claim.value(),
-                &response.proof,
-            ));
+            let started = Instant::now();
+            selected_commitments.push(commitment.commitment);
+            claims.push((claim.point(), claim.value(), &response.proof));
             samples.push((response.global_index, response.value));
+            batch_preparation += started.elapsed();
         }
+        let entries = selected_commitments
+            .iter()
+            .zip(claims.iter())
+            .map(|(commitment, (point, value, proof))| (commitment, *point, *value, *proof))
+            .collect::<Vec<_>>();
         let timing = self
             .pcs
             .verify_batch_timed(&entries)
             .map_err(|_| VerificationError::InvalidProof)?;
+        let total = verification_started.elapsed();
+        let pcs_verification = timing.total.saturating_sub(timing.decompression);
         Ok((
             VerifiedTranscript {
                 block_id: header.block_id,
@@ -851,7 +908,15 @@ where
                 indices: plan.indices.clone(),
                 samples,
             },
-            timing,
+            VerificationTiming {
+                commitment_selection,
+                evaluation_point,
+                batch_preparation,
+                proof_deserialization: Duration::ZERO,
+                decompression: timing.decompression,
+                pcs_verification,
+                total,
+            },
         ))
     }
 
@@ -892,13 +957,13 @@ where
 }
 
 #[cfg(test)]
-mod lifecycle_order_tests {
+mod workflow_order_tests {
     use std::sync::{Arc, Mutex};
 
     use ark_bls12_381::Fr;
 
     use super::*;
-    use crate::pcs::kzg::KzgStrategy;
+    use crate::pcs::{PcsError, kzg::KzgStrategy};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Event {
@@ -926,8 +991,8 @@ mod lifecycle_order_tests {
     impl ErasureCode for RecordingCode {
         type Field = Fr;
 
-        fn profile(&self) -> CodeProfile {
-            CodeProfile::Rs2d { n0: 2, k0: 1 }
+        fn profile(&self) -> CodeConfig {
+            CodeConfig::Rs2d { n0: 2, k0: 1 }
         }
 
         fn message_len(&self) -> usize {
@@ -1080,10 +1145,10 @@ mod lifecycle_order_tests {
         let pcs = RecordingPcs {
             events: Arc::clone(&events),
         };
-        let profile = ProtocolProfile::new(
+        let profile = ProtocolConfig::new(
             code.profile(),
-            super::super::protocol_profile::FieldProfile::Bls12381Scalar,
-            super::super::protocol_profile::PcsProfile::Kzg {
+            crate::das::core::protocol_config::FieldConfig::Bls12381Scalar,
+            crate::das::core::protocol_config::PcsConfig::Kzg {
                 strategy: KzgStrategy::Fk20,
             },
             1,
@@ -1095,7 +1160,7 @@ mod lifecycle_order_tests {
         setup
             .proposer
             .prepare(BlockId::new([0x55; 32]), &[Fr::from(7)])
-            .expect("ordered proposer lifecycle");
+            .expect("ordered proposer workflow");
 
         let actual = events.lock().expect("event log lock").clone();
         assert_eq!(actual.len(), 12);

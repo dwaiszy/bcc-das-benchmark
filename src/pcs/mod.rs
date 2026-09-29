@@ -12,7 +12,19 @@ use thiserror::Error;
 /// checking. `total` includes `decompression`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VerificationTiming {
+    /// Time selecting the committed local arc for each sampled global index.
+    pub commitment_selection: Duration,
+    /// Time deriving canonical local evaluation points from sampled indices.
+    pub evaluation_point: Duration,
+    /// Time preparing the PCS batch entry vector.
+    pub batch_preparation: Duration,
+    /// Proof deserialization time. The current typed in-memory benchmark has
+    /// already deserialized proofs, so this is zero until a wire round-trip is
+    /// explicitly benchmarked.
+    pub proof_deserialization: Duration,
     pub decompression: Duration,
+    /// PCS verification excluding proof decompression.
+    pub pcs_verification: Duration,
     pub total: Duration,
 }
 
@@ -57,7 +69,7 @@ pub enum PcsError {
 
 /// Deep interface implemented by a PCS for one independently committed local code.
 pub trait ArcPcs<F: FftField>: Send + Sync + 'static {
-    type Commitment: Send + Sync + 'static;
+    type Commitment: Clone + Send + Sync + 'static;
     type ProverState: Send + Sync + 'static;
     type Proof: Clone + Send + Sync + 'static;
 
@@ -97,6 +109,17 @@ pub trait ArcPcs<F: FftField>: Send + Sync + 'static {
 
     fn commitment_bytes(&self, commitment: &Self::Commitment) -> usize;
 
+    /// Derive a commitment to a linear combination of already published
+    /// commitments. Codes without homomorphic commitment derivation never
+    /// call this method.
+    fn derive_commitment(
+        &self,
+        _commitments: &[Self::Commitment],
+        _weights: &[F],
+    ) -> Result<Self::Commitment, PcsError> {
+        Err(PcsError::UnsupportedPoint)
+    }
+
     /// Verify existing scalar proofs together. Backends may reuse a native
     /// batch verifier; the default preserves individual verification.
     fn verify_batch(
@@ -115,9 +138,15 @@ pub trait ArcPcs<F: FftField>: Send + Sync + 'static {
     ) -> Result<VerificationTiming, PcsError> {
         let started = std::time::Instant::now();
         self.verify_batch(entries)?;
+        let total = started.elapsed();
         Ok(VerificationTiming {
+            commitment_selection: Duration::ZERO,
+            evaluation_point: Duration::ZERO,
+            batch_preparation: Duration::ZERO,
+            proof_deserialization: Duration::ZERO,
             decompression: Duration::ZERO,
-            total: started.elapsed(),
+            pcs_verification: total,
+            total,
         })
     }
 

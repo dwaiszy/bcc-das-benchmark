@@ -7,6 +7,7 @@ mod tests {
     use ark_bls12_381::Fr;
     use ark_ff::UniformRand;
     use ark_poly::{DenseUVPolynomial, Polynomial};
+    use ark_serialize::CanonicalSerialize;
     use ark_std::test_rng;
 
     #[test]
@@ -100,5 +101,18 @@ mod tests {
 
         let multipoint_proof = scheme.open_multipoint(&poly, &commitment, &points);
         assert!(scheme.verify_multipoint(&commitment, &points, &values, &multipoint_proof));
+    }
+
+    #[test]
+    fn scalar_proof_measurement_excludes_the_absent_hiding_value_tag() {
+        let pcs = KzgArcPcs::setup_fk20(7, 32, &mut test_rng()).unwrap();
+        let polynomial = UniPoly::from_coefficients_vec((1_u64..=8).map(Fr::from).collect());
+        let (_, randomness) = pcs.inner.commit(&polynomial);
+        let proof = pcs.inner.open(&polynomial, Fr::from(3_u64), &randomness);
+
+        assert!(proof.random_v.is_none());
+        assert_eq!(proof.w.compressed_size(), 48);
+        assert_eq!(pcs.proof_bytes(&proof), 48);
+        assert_eq!(proof.compressed_size(), 49);
     }
 }

@@ -25,8 +25,8 @@ pub enum CodeError {
 
 #[derive(Debug, Error)]
 pub enum SetupError {
-    #[error("protocol profile does not match the selected adapters")]
-    ProfileMismatch,
+    #[error("protocol configuration does not match the selected adapters")]
+    ConfigMismatch,
     #[error("failed to construct the proposer Rayon pool")]
     ThreadPool,
     #[error(transparent)]
@@ -49,11 +49,11 @@ pub enum PrepareError {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VerificationError {
-    #[error("header selects a different protocol profile")]
-    WrongProfile,
+    #[error("header selects a different protocol configuration")]
+    WrongConfig,
     #[error("header contains the wrong number of ordered commitments")]
     WrongCommitmentCount,
-    #[error("sample count does not match the protocol profile")]
+    #[error("sample count does not match the protocol configuration")]
     WrongSampleCount,
     #[error("one light client cannot sample the same index twice")]
     DuplicateSample,
@@ -69,13 +69,15 @@ pub enum VerificationError {
     WrongCommitment,
     #[error("PCS proof verification failed")]
     InvalidProof,
+    #[error("authenticated BCC arcs disagree on an overlapping position")]
+    InconsistentOverlap,
 }
 
 #[derive(Debug, Error)]
 pub enum ExtractionError {
     #[error("header verification failed: {0}")]
     Verification(VerificationError),
-    #[error("transcript belongs to another block or profile")]
+    #[error("transcript belongs to another block or configuration")]
     WrongTranscript,
     #[error("verified transcripts conflict at one global index")]
     ConflictingValue,

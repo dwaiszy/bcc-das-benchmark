@@ -6,11 +6,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use ark_ff::FftField;
 use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
 
-use super::super::das_lifecycle::{
+use crate::das::core::CodeConfig;
+use crate::das::core::{
     CodeError, EncodedBlock, ErasureCode, EvaluationClaim, LocalCode, LocalCodeId, LocalPosition,
     PolynomialBlock,
 };
-use super::super::protocol_profile::CodeProfile;
 use crate::{BcParams, FftBlockCirculantCode};
 
 #[derive(Clone)]
@@ -43,8 +43,8 @@ where
     F: FftField + Send + Sync + 'static,
 {
     type Field = F;
-    fn profile(&self) -> CodeProfile {
-        CodeProfile::Bcc(self.params())
+    fn profile(&self) -> CodeConfig {
+        CodeConfig::Bcc(self.params())
     }
     fn message_len(&self) -> usize {
         self.params().k()
