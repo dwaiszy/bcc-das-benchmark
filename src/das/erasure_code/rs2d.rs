@@ -1,5 +1,4 @@
-//! Two-dimensional Reed–Solomon erasure-code adapter for generic DAS.
-//! It exposes source-row commitments and encoded-row evaluation claims.
+//! Two-dimensional Reed–Solomon erasure-code DAS adapter.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -33,6 +32,14 @@ impl<F: FftField> Rs2dCode<F> {
     pub fn k0(&self) -> usize {
         self.inner.k0()
     }
+    pub fn source_row_weights(&self, row: usize) -> Vec<F> {
+        self.inner.source_row_weights(row)
+    }
+    pub fn source_row_polynomials(&self, message: &[F]) -> Result<Vec<Vec<F>>, CodeError> {
+        self.inner
+            .source_row_polynomials(message)
+            .map_err(CodeError::from)
+    }
 }
 
 impl<F> ErasureCode for Rs2dCode<F>
@@ -60,6 +67,19 @@ where
     }
     fn local_code_len(&self) -> usize {
         self.n0()
+    }
+    fn published_commitment_count(&self) -> usize {
+        self.k0()
+    }
+    fn header_polynomials(
+        &self,
+        message: &[F],
+        _polynomials: &PolynomialBlock<F>,
+    ) -> Result<Option<Vec<Vec<F>>>, CodeError> {
+        Ok(Some(self.source_row_polynomials(message)?))
+    }
+    fn header_commitment_weights(&self, local_code: usize) -> Option<Vec<F>> {
+        (local_code < self.n0()).then(|| self.source_row_weights(local_code))
     }
 
     fn polynomialize(&self, message: &[F]) -> Result<PolynomialBlock<F>, CodeError> {

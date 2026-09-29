@@ -69,6 +69,8 @@ pub enum VerificationError {
     WrongCommitment,
     #[error("PCS proof verification failed")]
     InvalidProof,
+    #[error("authenticated BCC arcs disagree on an overlapping position")]
+    InconsistentOverlap,
 }
 
 #[derive(Debug, Error)]

@@ -1,21 +1,28 @@
-//! Controlled BCC+KZG, BCC+WHIR, and RS2D+KZG DAS benchmark.
+//! Matched-parameter benchmark for BCC+KZG, BCC+WHIR-JB, and 2D-RS+KZG.
 //! It measures setup, commit, encode, opening, sampling, verification, and
-//! proof-size measurements, then emits one reproducible JSON object per row.
+//! proof-size measurements and outputs a JSON object per run.
 
 use std::error::Error;
+use std::hint::black_box;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ark_bls12_381::Fr as BlsFr;
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 use block_circulant_codes::BcParams;
 use block_circulant_codes::benchmark_config::{
-    LIGHT_CLIENT_COUNT, MEASURED_RUNS, MasterInput, MasterSampleSchedule, MatchedParameters,
-    OMEGAS, PROOF_ORDER, PROOF_SCOPE_BCC, PROOF_SCOPE_RS2D, SAMPLING_MODEL,
-    SAMPLING_SOUNDNESS_BITS, WARMUP_RUNS, fresh_seed, hex, proposer_threads,
+    MEASURED_RUNS, MasterInput, MasterSampleSet, MatchedParameters,
+    OMEGAS, PROOF_ORDER, PROOF_SCOPE_BCC, PROOF_SCOPE_RS2D,
+    WARMUP_RUNS,
+    configured_light_client_count, configured_soundness_bits,
+    configured_seed, hex, proposer_threads,
 };
 use block_circulant_codes::das::{
-    BlockId, ErasureCode, PreparedBlock, SetupArtifacts, bcc_kzg, bcc_whir, rs2d_kzg,
+    BlockId, ErasureCode, PreparedBlock, SetupArtifacts, bcc_kzg, bcc_whir,
+    rs2d_kzg,
 };
+use block_circulant_codes::das::erasure_code::{BccCode, Rs2dCode};
 use block_circulant_codes::pcs::ArcPcs;
+use block_circulant_codes::pcs::whir::WhirField;
 
 #[derive(Clone, Copy)]
 struct Meta {
@@ -40,7 +47,7 @@ struct Row {
     p: MatchedParameters,
     samples: Vec<usize>,
     sample_seed: String,
-    schedule_hash: String,
+    sample_set_hash: String,
     input_seed: String,
     input_hash: String,
     commitments: usize,
@@ -52,10 +59,13 @@ struct Row {
     verify: Duration,
     decompress: Duration,
     verify_crypto: Duration,
+    lc_challenge_generation: Duration,
     header_bytes: usize,
     data_bytes: usize,
     metadata_bytes: usize,
     proof_bytes: usize,
+    proof_oracle_bytes: usize,
+    request_bytes: usize,
 }
 
 impl Row {
@@ -81,13 +91,13 @@ impl Row {
                 "\"scheme\":\"{}\",\"field\":\"{}\",\"pcs\":\"{}\",\"security_target_bits\":{},",
                 "\"security_parameters\":\"{}\",\"profile_status\":\"{}\",\"profile_id\":\"{}\",\"setup_id\":\"{}\",",
                 "\"omega\":{},\"k\":{},\"n\":{},\"mu\":{},\"rho\":{},\"local_k\":{},\"local_n\":{},",
-                "\"opening_profile\":\"paper-scalar\",\"sampling_model\":\"{}\",\"sampling_light_clients\":{},\"sampling_failure_bits\":{},\"reception_threshold\":{},\"sample_count\":{},\"sample_indices\":[{}],",
-                "\"sample_seed\":\"{}\",\"sample_schedule_hash\":\"{}\",\"input_seed\":\"{}\",\"input_hash\":\"{}\",",
+                "\"opening_profile\":\"paper-scalar\",\"sampling_model\":\"{}\",\"sampling_light_clients\":{},\"sampling_failure_bits\":{},\"reception_threshold\":{},\"q_min\":{},\"withheld_limit\":{},\"sample_count\":{},\"sample_indices\":[{}],",
+                "\"sample_seed\":\"{}\",\"sample_set_hash\":\"{}\",\"input_seed\":\"{}\",\"input_hash\":\"{}\",",
                 "\"proposer_threads\":{},\"verifier_threads\":{},\"proof_encoding\":\"{}\",\"commitment_count\":{},\"proof_scope\":\"{}\",",
                 "\"proof_order\":\"{}\",\"proposer_proof_count\":{},\"setup_ms\":{:.6},\"encode_ms\":{:.6},",
-                "\"commit_ms\":{:.6},\"open_ms\":{:.6},\"proposer_ms\":{:.6},\"total_proving_ms\":{:.6},\"decompress_ms\":{:.6},\"verify_crypto_ms\":{:.6},\"verify_ms\":{:.6},",
+                "\"commit_ms\":{:.6},\"open_ms\":{:.6},\"proposer_ms\":{:.6},\"total_proving_ms\":{:.6},\"decompress_ms\":{:.6},\"verify_crypto_ms\":{:.6},\"verify_ms\":{:.6},\"lc_challenge_generation_total_ms\":{:.6},\"lc_challenge_generation_mean_ms\":{:.6},",
                 "\"header_bytes\":{},\"sample_data_bytes\":{},\"sample_metadata_bytes\":{},\"verify_proof_bytes\":{},",
-                "\"light_client_download_bytes\":{}}}"
+                "\"light_client_download_bytes\":{},\"client_request_bytes\":{},\"total_client_communication_bytes\":{},\"proof_oracle_bytes\":{}}}"
             ),
             self.run,
             self.timestamp,
@@ -115,18 +125,28 @@ impl Row {
             } else {
                 self.p.rs2d_n0
             },
-            SAMPLING_MODEL,
-            LIGHT_CLIENT_COUNT,
-            SAMPLING_SOUNDNESS_BITS,
+            sampling_model(),
+            configured_light_client_count(),
+            configured_soundness_bits(),
             if self.meta.proof_scope == PROOF_SCOPE_BCC {
                 self.p.bcc_reception_threshold()
             } else {
                 self.p.rs2d_reception_threshold()
             },
+            if self.meta.proof_scope == PROOF_SCOPE_BCC {
+                self.p.bcc_q_min()
+            } else {
+                self.p.rs2d_q_min()
+            },
+            if self.meta.proof_scope == PROOF_SCOPE_BCC {
+                self.p.bcc_withheld_limit()
+            } else {
+                self.p.rs2d_withheld_limit()
+            },
             self.samples.len(),
             ix,
             self.sample_seed,
-            self.schedule_hash,
+            self.sample_set_hash,
             self.input_seed,
             self.input_hash,
             proposer_threads(),
@@ -145,11 +165,16 @@ impl Row {
             ms(self.decompress),
             ms(self.verify_crypto),
             ms(self.verify),
+            ms(self.lc_challenge_generation),
+            ms(self.lc_challenge_generation) / configured_light_client_count() as f64,
             self.header_bytes,
             self.data_bytes,
             self.metadata_bytes,
             self.proof_bytes,
-            download
+            download,
+            self.request_bytes,
+            download + self.request_bytes,
+            self.proof_oracle_bytes
         )
     }
 }
@@ -163,13 +188,29 @@ fn finish<C, P>(
     meta: Meta,
     samples: &[usize],
     input: &MasterInput,
-    schedule: &MasterSampleSchedule,
+    sample_set: &MasterSampleSet,
     run: usize,
 ) -> Result<Row, Box<dyn Error>>
 where
     C: ErasureCode,
     P: ArcPcs<C::Field>,
 {
+    // Each light client independently samples Q global codeword positions
+    // under the configured sampling model. This client-side sampling work is
+    // measured separately from proposer work and proof verification.
+    let mut challenge_rng = StdRng::from_seed(configured_seed("DAS_BENCH_SAMPLE_SEED"));
+    let challenge_started = Instant::now();
+    for _ in 0..configured_light_client_count() {
+        let mut client_seed = [0_u8; 32];
+        challenge_rng.fill_bytes(&mut client_seed);
+        let client_sample_set = if sampling_model() == "uniform_with_replacement" {
+            MasterSampleSet::generate_with_replacement(p.n, samples.len(), client_seed)
+        } else {
+            MasterSampleSet::generate(p.n, samples.len(), client_seed)
+        };
+        black_box(client_sample_set);
+    }
+    let lc_challenge_generation = challenge_started.elapsed();
     let plan = a.verifier.v1_from_indices(&b.header, samples)?;
     let responses = b.dispersal.respond(&plan)?;
     let started = Instant::now();
@@ -177,7 +218,7 @@ where
         a.verifier.v2_with_timing(&b.header, &plan, &responses)?;
     let verify = started.elapsed();
     if transcript.sampled_indices() != samples {
-        return Err("V2 changed the sample schedule".into());
+        return Err("V2 changed the sample set".into());
     }
     let local_n = if meta.proof_scope == PROOF_SCOPE_BCC {
         p.bcc_n0
@@ -221,8 +262,8 @@ where
         setup_id: hex(profile.setup_id()),
         p,
         samples: samples.to_vec(),
-        sample_seed: schedule.seed_hex(),
-        schedule_hash: schedule.hash_hex(),
+        sample_seed: sample_set.seed_hex(),
+        sample_set_hash: sample_set.hash_hex(),
         input_seed: input.seed_hex(),
         input_hash: input.hash_hex(),
         commitments: b.header.local_commitments().len(),
@@ -234,16 +275,27 @@ where
         verify,
         decompress: verification_timing.decompression,
         verify_crypto: verify.saturating_sub(verification_timing.decompression),
+        lc_challenge_generation,
         header_bytes: measurements.header_bytes,
         data_bytes: measurements.sample_data_bytes,
         metadata_bytes: measurements.sample_metadata_bytes,
         proof_bytes: measurements.verify_proof_bytes,
+        proof_oracle_bytes: b.dispersal.proof_oracle_bytes(a.proposer.pcs()),
+        // Requests encode each sampled global position as one canonical u64.
+        request_bytes: samples.len() * std::mem::size_of::<u64>(),
     })
 }
 
 fn selected(name: &str) -> bool {
-    std::env::var("DAS_BENCH_ONLY").map_or(true, |v| v.split(',').any(|x| x.trim() == name))
+    std::env::var("DAS_BENCH_ONLY")
+        .map(|v| v.split(',').any(|x| x.trim() == name))
+        .unwrap_or(true)
 }
+
+fn ms(value: Duration) -> f64 {
+    value.as_secs_f64() * 1000.0
+}
+
 fn git_commit() -> String {
     std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -260,17 +312,28 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
         omega: p.omega,
         rho: p.rho,
     };
-    let input = MasterInput::generate(p.k, fresh_seed());
+    let input = MasterInput::generate(p.k, configured_seed("DAS_BENCH_INPUT_SEED"));
     let bls = input.embed::<BlsFr>();
-    let block = BlockId::new(fresh_seed());
-    let bcc_sample_count = p.bcc_sample_count();
-    let rs2d_sample_count = p.rs2d_sample_count();
-    let schedule =
-        MasterSampleSchedule::generate(p.n, bcc_sample_count.max(rs2d_sample_count), fresh_seed());
+    let whir = input.embed::<WhirField>();
+    let block = BlockId::new([0x73; 32]);
+    let bcc_sample_count = env_n("DAS_BENCH_BCC_SAMPLES", p.bcc_sample_count());
+    let rs2d_sample_count = env_n("DAS_BENCH_RS2D_SAMPLES", p.rs2d_sample_count());
+    if bcc_sample_count == 0
+        || rs2d_sample_count == 0
+        || bcc_sample_count > p.n
+        || rs2d_sample_count > p.n
+    {
+        return Err("sample counts must be between 1 and n".into());
+    }
+    let sample_set = sample_set(
+        p.n,
+        bcc_sample_count.max(rs2d_sample_count),
+        configured_seed("DAS_BENCH_SAMPLE_SEED"),
+    );
     let mut rows = Vec::new();
-    // A scheme is fully processed and dropped before the next begins.  This
-    // both matches the benchmark contract's independent-scheme timing and
-    // prevents four complete opening oracles being resident at once.
+    // Each scheme is measured independently under the same matched parameters.
+    // Its state is released before the next measurement to keep the comparison
+    // isolated and bound peak memory use.
     if selected("bcc-kzg") {
         let started = Instant::now();
         let a = bcc_kzg::setup(bp, bcc_sample_count, proposer_threads())?;
@@ -294,9 +357,9 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
                 verifier_threads: 1,
                 proof_encoding: "compressed-g1-witness",
             },
-            schedule.prefix(bcc_sample_count),
+            sample_set.prefix(bcc_sample_count),
             &input,
-            &schedule,
+            &sample_set,
             run,
         )?);
     }
@@ -304,7 +367,7 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
         let started = Instant::now();
         let a = bcc_whir::setup(bp, bcc_sample_count, proposer_threads())?;
         let s = started.elapsed();
-        let committed = a.proposer.commit(block, &bls)?;
+        let committed = a.proposer.commit(block, &whir)?;
         let encoded = a.proposer.encode(committed)?;
         let b = a.proposer.open(encoded)?;
         rows.push(finish(
@@ -314,18 +377,18 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
             p,
             Meta {
                 scheme: "bcc-whir",
-                field: "bls12-381-scalar",
+                field: "goldilocks2",
                 pcs: "whir-johnson",
-                security_bits: Some(128),
-                security_parameters: "Johnson bound; Blake3; PoW=0",
+                security_bits: Some(bcc_whir::configured_security_bits()),
+                security_parameters: "Johnson bound; Blake3; PoW=0; configured WHIR security level",
                 status: "benchmark",
                 proof_scope: PROOF_SCOPE_BCC,
                 verifier_threads: 1,
                 proof_encoding: "zstd-level-3",
             },
-            schedule.prefix(bcc_sample_count),
+            sample_set.prefix(bcc_sample_count),
             &input,
-            &schedule,
+            &sample_set,
             run,
         )?);
     }
@@ -352,9 +415,9 @@ fn one_geometry(p: MatchedParameters, run: usize) -> Result<Vec<Row>, Box<dyn Er
                 verifier_threads: 1,
                 proof_encoding: "compressed-g1-witness",
             },
-            schedule.prefix(rs2d_sample_count),
+            sample_set.prefix(rs2d_sample_count),
             &input,
-            &schedule,
+            &sample_set,
             run,
         )?);
     }
@@ -367,13 +430,73 @@ fn env_n(name: &str, default: usize) -> usize {
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
 }
+
+fn sample_set(n: usize, sample_count: usize, seed: [u8; 32]) -> MasterSampleSet {
+    if std::env::var("DAS_BENCH_SAMPLING")
+        .map(|value| value.eq_ignore_ascii_case("with_replacement"))
+        .unwrap_or(true)
+    {
+        MasterSampleSet::generate_with_replacement(n, sample_count, seed)
+    } else {
+        MasterSampleSet::generate(n, sample_count, seed)
+    }
+}
+
+fn sampling_model() -> &'static str {
+    if std::env::var("DAS_BENCH_SAMPLING")
+        .map(|value| value.eq_ignore_ascii_case("with_replacement"))
+        .unwrap_or(true)
+    {
+        "uniform_with_replacement"
+    } else {
+        "unique_within_lc_shared_random_permutation"
+    }
+}
+
+fn configured_mu() -> usize {
+    env_n("DAS_BENCH_MU", 4)
+}
+
+fn print_encoding_only(p: MatchedParameters, input: &[BlsFr]) -> Result<(), Box<dyn Error>> {
+    let bcc = BccCode::new(BcParams {
+        mu: p.mu,
+        omega: p.omega,
+        rho: p.rho,
+    })?;
+    let started = Instant::now();
+    let bcc_polynomials = bcc.polynomialize(input)?;
+    let bcc_encoded = bcc.encode_polynomials(&bcc_polynomials)?;
+    println!(
+        "{{\"schema_version\":\"encoding-only-v1\",\"scheme\":\"BCC\",\"k\":{},\"n\":{},\"encode_ms\":{:.6},\"encoded_values\":{}}}",
+        p.k,
+        p.n,
+        ms(started.elapsed()),
+        bcc_encoded.symbols().len()
+    );
+
+    let rs2d = Rs2dCode::new(p.rs2d_n0, p.rs2d_k0)?;
+    let started = Instant::now();
+    let rs2d_polynomials = rs2d.polynomialize(input)?;
+    let rs2d_encoded = rs2d.encode_polynomials(&rs2d_polynomials)?;
+    println!(
+        "{{\"schema_version\":\"encoding-only-v1\",\"scheme\":\"RS2D\",\"k\":{},\"n\":{},\"encode_ms\":{:.6},\"encoded_values\":{}}}",
+        p.k,
+        p.n,
+        ms(started.elapsed()),
+        rs2d_encoded.symbols().len()
+    );
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let omegas = std::env::var("DAS_BENCH_OMEGA")
         .ok()
         .and_then(|v| v.parse().ok())
         .map_or_else(|| OMEGAS.to_vec(), |v| vec![v]);
-    if omegas.iter().any(|v| !OMEGAS.contains(v)) {
-        return Err("DAS_BENCH_OMEGA must be 4,16,64,256, or 1024".into());
+    // 512 is used by the `mu = 8, k = 4096` rate-1/4 geometry.  Keep the
+    // historical default parameter set (`OMEGAS`) unchanged.
+    if omegas.iter().any(|v| !OMEGAS.contains(v) && *v != 512) {
+        return Err("DAS_BENCH_OMEGA must be 4,16,64,256,512, or 1024".into());
     }
     let explicit = std::env::var("DAS_BENCH_RUN")
         .ok()
@@ -399,9 +522,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "run={run} warmup={warmup} omega={omega} threads={}",
                 proposer_threads()
             );
-            for row in one_geometry(MatchedParameters::rate_one_quarter(omega), run)? {
+            for row in one_geometry(
+                MatchedParameters::rate_one_quarter_with_mu(omega, configured_mu()),
+                run,
+            )? {
                 if !warmup {
                     println!("{}", row.json())
+                }
+            }
+            if !warmup {
+                let p = MatchedParameters::rate_one_quarter_with_mu(omega, configured_mu());
+                let input = MasterInput::generate(p.k, configured_seed("DAS_BENCH_INPUT_SEED"));
+                let bls = input.embed::<BlsFr>();
+                if std::env::var_os("DAS_BENCH_ENCODING_ONLY").is_some() {
+                    print_encoding_only(p, &bls)?;
                 }
             }
         }

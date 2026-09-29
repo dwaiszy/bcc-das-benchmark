@@ -11,7 +11,7 @@ use crate::pcs::kzg::{KzgArcPcs, KzgStrategy};
 
 pub type BccKzg = SetupArtifacts<BccCode<Fr>, KzgArcPcs>;
 
-/// Configure BCC+KZG with the caller's sampler-derived scalar sample count.
+/// Configure BCC+KZG with the given parameters.
 pub fn setup(
     params: BcParams,
     sample_count: usize,

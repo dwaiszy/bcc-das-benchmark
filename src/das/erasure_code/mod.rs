@@ -1,4 +1,4 @@
-//! Erasure-code adapters used by the DAS proposer and light-client roles.
+//! Erasure-code adapters used by the DAS proposer and light-client.
 
 mod bcc;
 mod rs2d;

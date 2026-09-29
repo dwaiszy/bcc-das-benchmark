@@ -10,7 +10,7 @@ use crate::pcs::kzg::{KzgArcPcs, KzgStrategy};
 
 pub type Rs2dKzg = SetupArtifacts<Rs2dCode<Fr>, KzgArcPcs>;
 
-/// Configure 2D-RS+KZG with the caller's sampler-derived scalar sample count.
+/// Configure 2D-RS+KZG with the given parameters.
 pub fn setup(
     n0: usize,
     k0: usize,
@@ -31,4 +31,39 @@ pub fn setup(
         proposer_threads,
     );
     setup_roles(code, pcs, config, proposer_threads)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::das::BlockId;
+    use ark_bls12_381::Fr;
+
+    #[test]
+    fn scalar_rs2d_header_publishes_only_source_row_commitments() {
+        let artifacts = setup(64, 32, 1, 1).expect("RS2D scalar setup");
+        let message = (0..1024)
+            .map(|i| Fr::from((i + 1) as u64))
+            .collect::<Vec<_>>();
+        let prepared = artifacts
+            .proposer
+            .prepare(BlockId::new([0xB6; 32]), &message)
+            .expect("RS2D scalar preparation");
+
+        assert_eq!(prepared.header.local_commitments().len(), 32);
+        // Row 63 is an encoded row, so successful verification proves that
+        // its commitment was derived from the 32 published source rows.
+        let plan = artifacts
+            .verifier
+            .v1_from_indices(&prepared.header, &[63 * 64 + 7])
+            .expect("RS2D sample plan");
+        let responses = prepared
+            .dispersal
+            .respond(&plan)
+            .expect("RS2D scalar response");
+        artifacts
+            .verifier
+            .v2(&prepared.header, &plan, &responses)
+            .expect("derived encoded-row commitment must verify");
+    }
 }

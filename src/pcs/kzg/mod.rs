@@ -35,6 +35,7 @@ type G2Affine = <Bls12_381 as Pairing>::G2Affine;
 /// The setup is built manually because coset verification needs the extra
 /// G2 element `[beta^coset_size]_2`, while vanilla `Kzg::setup` only exposes
 /// `[1]_2` and `[beta]_2`.
+#[derive(Clone)]
 pub struct KzgLocalCodeScheme {
     powers: Powers<'static, Bls12_381>,
     vk: VerifierKey<Bls12_381>,
@@ -135,6 +136,19 @@ impl ArcPcs<Fr> for KzgArcPcs {
         commitment.compressed_size()
     }
 
+    fn derive_commitment(
+        &self,
+        commitments: &[Self::Commitment],
+        weights: &[Fr],
+    ) -> Result<Self::Commitment, PcsError> {
+        if commitments.len() != weights.len() {
+            return Err(PcsError::Commit);
+        }
+        Ok(self
+            .inner
+            .linear_combination_commitment(commitments, weights))
+    }
+
     fn verify_batch(
         &self,
         entries: &[(&Self::Commitment, Fr, Fr, &Self::Proof)],
@@ -177,6 +191,17 @@ impl ArcPcs<Fr> for KzgArcPcs {
 }
 
 impl KzgLocalCodeScheme {
+    /// Derive a commitment to a linear combination of committed polynomials.
+    /// This is used by RS2D to avoid publishing commitments for extended rows.
+    pub fn linear_combination_commitment(
+        &self,
+        commitments: &[Commitment<Bls12_381>],
+        weights: &[Fr],
+    ) -> Commitment<Bls12_381> {
+        assert_eq!(commitments.len(), weights.len());
+        let bases = commitments.iter().map(|c| c.0).collect::<Vec<_>>();
+        Commitment(msm(weights, &bases).into_affine())
+    }
     /// Build a demo SRS for degree-`<= max_degree` polynomials.
     pub fn setup<R: RngCore>(
         max_degree: usize,

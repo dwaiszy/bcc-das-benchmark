@@ -1,9 +1,8 @@
-//! Protocol configuration and deterministic configuration digests.
-
+//! Protocol configuration
 use sha2::{Digest, Sha256};
 
-use crate::BcParams;
 use crate::pcs::kzg::KzgStrategy;
+use crate::BcParams;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProtocolConfigDigest([u8; 32]);
@@ -19,6 +18,7 @@ impl ProtocolConfigDigest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FieldConfig {
     Bls12381Scalar,
+    Goldilocks2,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CodeConfig {
@@ -57,6 +57,26 @@ impl ProtocolConfig {
         setup_id: [u8; 32],
         proposer_threads: usize,
     ) -> Self {
+        Self::new_with_opening(
+            code,
+            field,
+            pcs,
+            OpeningMode::Scalar,
+            sample_count,
+            setup_id,
+            proposer_threads,
+        )
+    }
+
+    pub(crate) fn new_with_opening(
+        code: CodeConfig,
+        field: FieldConfig,
+        pcs: PcsConfig,
+        opening: OpeningMode,
+        sample_count: usize,
+        setup_id: [u8; 32],
+        proposer_threads: usize,
+    ) -> Self {
         let mut encoded = Vec::new();
         match code {
             CodeConfig::Bcc(params) => {
@@ -73,6 +93,7 @@ impl ProtocolConfig {
         }
         encoded.push(match field {
             FieldConfig::Bls12381Scalar => 1,
+            FieldConfig::Goldilocks2 => 3,
         });
         match pcs {
             PcsConfig::Kzg { strategy } => {
@@ -88,7 +109,9 @@ impl ProtocolConfig {
                 encoded.extend_from_slice(&security_bits.to_le_bytes());
             }
         }
-        encoded.push(1);
+        encoded.push(match opening {
+            OpeningMode::Scalar => 1,
+        });
         encoded.extend_from_slice(&(sample_count as u64).to_le_bytes());
         encoded.extend_from_slice(&setup_id);
         encoded.extend_from_slice(&1_u16.to_le_bytes());
@@ -99,7 +122,7 @@ impl ProtocolConfig {
             code,
             field,
             pcs,
-            opening: OpeningMode::Scalar,
+            opening,
             sample_count,
             setup_id,
             format_version: 1,

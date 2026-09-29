@@ -1,105 +1,68 @@
-# Block-Circulant DAS
+# Block-Circulant DAS benchmark artifact
 
-This repository contains a generic data-availability-sampling (DAS)
-construction with BCC and 2D Reed–Solomon erasure codes, backed by KZG or
-WHIR polynomial commitments.
+This repository contains the implementation and benchmark drivers used to
+compare BCC+KZG, 2D-RS+KZG, BCC+WHIR-JB, and FRIDA. Generated measurements
+are intentionally excluded: each command below writes fresh outputs under
+`results/`.
 
-## Code structure
+## Requirements
 
-```text
-src/
-├── das/
-│   ├── core/                 Shared DAS workflow and data types
-│   │   ├── das_workflow.rs   Proposer/light-client workflow
-│   │   ├── errors.rs         DAS error types
-│   │   ├── scalar_opening.rs  Scalar proof-opening generation
-│   │   ├── proof_serialization.rs  Serialized proof measurements
-│   │   └── protocol_config.rs      Protocol configuration
-│   ├── erasure_code/
-│   │   ├── bcc.rs             BCC arc adapter
-│   │   └── rs2d.rs            2D-RS row/column adapter
-│   ├── bcc_kzg/               BCC + KZG setup
-│   ├── bcc_whir/              BCC + WHIR setup
-│   └── rs2d_kzg/              2D-RS + KZG setup
-├── pcs/
-│   ├── mod.rs                 Common PCS interface (`ArcPcs`)
-│   ├── kzg/                   KZG commit/open/verify implementations
-│   └── whir/                  WHIR adapter and proof serialization
-├── fft/
-│   ├── bcc/                   FFT-based BCC encoding and decoding
-│   └── rs2d/                  FFT-based 2D-RS encoding and decoding
-├── benchmark_config.rs        Benchmark parameters and run configuration
-└── error.rs                   Shared error types
+- Rust and Cargo (the pinned dependency versions are in `Cargo.lock`)
+- Python 3
+- Network access on the first Cargo build, to fetch the pinned FRIDA revision
+
+Build the benchmark executables once:
+
+```sh
+cargo build --release --examples
 ```
 
-## How the layers fit together
+## Reproducing the paper comparisons
 
-`das/core/das_workflow.rs` defines the scheme-independent workflow:
+### BCC+KZG versus 2D-RS+KZG
 
-```text
-commit original polynomials
-        ↓
-encode with the erasure code
-        ↓
-open every encoded position
-        ↓
-light client samples positions
-        ↓
-verify values against the appropriate commitment
+```sh
+python3 scripts/bcc-rs2d-kzg.py
 ```
 
-The generic roles are parameterized by two implementations:
+This runs the matched KZG comparison and writes raw measurements, summaries,
+and a report to `results/table3-bcc-rs2d-kzg/`.
 
-```rust
-BlockProposer<C, P>
-LightClientVerifier<C, P>
+### BCC+WHIR-JB versus FRIDA
+
+Run the matched BCC and FRIDA test, then aggregate its output:
+
+```sh
+python3 scripts/bcc-whir-frida.py
+python3 scripts/report-bcc-whir-frida.py
 ```
 
-`C` implements `ErasureCode` and supplies polynomialization, encoding, index
-mapping, and decoding. `P` implements `ArcPcs` and supplies commitment,
-opening, verification, and proof-size operations.
+The paper table uses the BCC measurements at `(k, mu) = (64, 32), (256, 32),
+(1024, 64), (4096, 64)` and the corresponding FRIDA measurements.
+Outputs are written to `results/table4-bcc-whir-frida/`.
 
-## DAS schemes
+### Four-scheme communication comparison
 
-### BCC + KZG
-
-`BccCode` creates one degree-`< k0` polynomial per BCC arc. KZG publishes one
-commitment per arc, encodes each arc, and generates scalar openings for its
-local positions. A sampled global index is mapped to its owning arc and
-verified against that arc commitment.
-
-### BCC + WHIR
-
-This uses the identical BCC polynomial and sampling logic as BCC+KZG. Only the
-PCS changes: WHIR creates and verifies the opening proof, with its adapter
-handling the coefficient-to-multilinear conversion and proof compression.
-
-### 2D-RS + KZG
-
-The source data is a `k0 × k0` matrix. RS encoding extends rows and columns to
-an `n0 × n0` matrix. The header publishes commitments only for the `k0` source
-rows; commitments for encoded rows are derived homomorphically from those
-source commitments using the vertical RS coefficients.
-
-## Benchmark and tests
-
-The benchmark configuration records setup, commit, encode, opening, verification,
-commitment counts, proof counts, and serialized sizes. Header/commitment metadata
-is reported separately as `header_bytes`, and is also included in the
-`light_client_download_bytes` total together with sampled values, response
-metadata, and opening proofs.
-
-For each code geometry, the scalar sample count is derived from Section 6's
-sampler bound using 1,000 independent light clients and a failure target of
-`2^-128`; it is not fixed at six BCC samples or eight 2D-RS samples outside
-the paper's `(k, n) = (1024, 4096)` setting. Each individual light client
-uses distinct indices to avoid redundant queries.
-
-Tests are organized around the same public workflow for every scheme:
-
-```text
-commit → encode → open → sample → disperse → verify
+```sh
+python3 scripts/communication-storage.py --runs 5 --threads 1 --ks 4096
 ```
 
-PCS-specific correctness tests are colocated with the PCS adapters, including
-KZG opening tests and WHIR serialization/verification tests.
+This runs BCC+KZG, 2D-RS+KZG, BCC+WHIR-JB, and FRIDA at the paper geometry.
+Use `--help` for the adjustable run count, thread count, output directory, and
+problem sizes. All raw measurements, configuration data, statistics, and final
+paper tables are written as CSV files under the corresponding `results/`
+directory. The scripts do not generate graphs, PDFs, Markdown, or LaTeX.
+
+## Layout
+
+- `src/` — BCC and 2D-RS codes, KZG and WHIR adapters, and shared DAS logic.
+- `benchmarks/das_benchmark.rs` — BCC+KZG, 2D-RS+KZG, and BCC+WHIR-JB runner.
+- `src/das/bcc_whir/scalar_opening.rs` — scalar BCC+WHIR-JB measurement runner.
+- `benchmarks/frida_benchmark.rs` — FRIDA measurement runner.
+- `scripts/` — reproducible benchmark and aggregation drivers only.
+
+Run the implementation tests with:
+
+```sh
+cargo test --lib --bins
+```

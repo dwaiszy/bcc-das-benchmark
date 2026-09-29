@@ -9,8 +9,9 @@ pub mod rs2d_kzg;
 pub use core::{
     AuthenticatedLocalCommitment, BlockId, BlockProposer, CodeConfig, CodeError, CommittedBlock,
     ConsensusHeader, DispersalSet, EncodedBlock, EncodedCommittedBlock, ErasureCode,
-    ExtractionError, FieldConfig, LightClientVerifier, LocalCodeId, LocalPosition, OpeningMode,
-    PcsConfig, PolynomialBlock, PreparationMetrics, PrepareError, PreparedBlock, ProofMeasurements,
-    ProtocolConfig, ProtocolConfigDigest, SamplePlan, SampleResponse, SampleResponses,
-    SetupArtifacts, SetupError, VerificationError, VerifiedTranscript, setup_roles,
+    ExtractionError, FieldConfig, LightClientVerifier, LocalCodeId, LocalPosition,
+    OpeningBreakdown, OpeningMode, PcsConfig, PolynomialBlock, PreparationMetrics, PrepareError,
+    PreparedBlock, ProofMeasurements, ProtocolConfig, ProtocolConfigDigest, SamplePlan,
+    SampleResponse, SampleResponses, SetupArtifacts, SetupError, VerificationError,
+    VerifiedTranscript, setup_roles,
 };
