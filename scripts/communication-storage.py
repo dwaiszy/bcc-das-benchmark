@@ -317,8 +317,8 @@ def main():
                 "samples_per_client": row["Q_min"],
                 "request_bytes": row["client_request_bytes"],
                 "download_bytes": row["total_client_download_bytes"],
-                "total_per_node_communication_bytes": row["total_client_communication_bytes"],
-                "total_per_node_communication_kib": row["total_client_communication_bytes"] / 1024.0,
+                "total_per_node_communication_bytes": row["total_client_download_bytes"],
+                "total_per_node_communication_kib": row["total_client_download_bytes"] / 1024.0,
             })
         table5_fields = list(table5_rows[0])
         with (out / "table5.csv").open("w", newline="") as f:

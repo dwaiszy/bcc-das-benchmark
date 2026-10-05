@@ -13,9 +13,8 @@ use crate::das::core::protocol_config::{CodeConfig, ProtocolConfig, ProtocolConf
 use crate::pcs::{ArcPcs, OpeningPoint, VerificationTiming};
 use ark_ff::{FftField, Zero};
 use ark_serialize::{CanonicalSerialize, Compress};
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
 use rayon::ThreadPool;
 use rayon::prelude::*;
 
@@ -745,9 +744,11 @@ where
         seed: [u8; 32],
     ) -> Result<SamplePlan, VerificationError> {
         self.validate_header(header)?;
-        let mut indices = (0..self.code.codeword_len()).collect::<Vec<_>>();
-        indices.shuffle(&mut StdRng::from_seed(seed));
-        self.v1_from_indices(header, &indices[..self.sample_count()])
+        let mut rng = StdRng::from_seed(seed);
+        let indices = (0..self.sample_count())
+            .map(|_| rng.gen_range(0..self.code.codeword_len()))
+            .collect::<Vec<_>>();
+        self.v1_from_indices(header, &indices)
     }
 
     pub fn v1_from_indices(
@@ -759,14 +760,10 @@ where
         if indices.len() != self.sample_count() {
             return Err(VerificationError::WrongSampleCount);
         }
-        let mut seen = std::collections::BTreeSet::new();
         let samples = indices
             .iter()
             .copied()
             .map(|global_index| {
-                if !seen.insert(global_index) {
-                    return Err(VerificationError::DuplicateSample);
-                }
                 let local = self
                     .code
                     .canonical_position(global_index)
@@ -1203,5 +1200,40 @@ mod workflow_order_tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn repeated_sample_position_is_verified_with_replacement() {
+        let events = Events::default();
+        let code = RecordingCode {
+            events: Arc::clone(&events),
+        };
+        let pcs = RecordingPcs { events };
+        let profile = ProtocolConfig::new(
+            code.profile(),
+            crate::das::core::protocol_config::FieldConfig::Bls12381Scalar,
+            crate::das::core::protocol_config::PcsConfig::Kzg {
+                strategy: KzgStrategy::Fk20,
+            },
+            2,
+            [0x98; 32],
+            1,
+        );
+        let setup = setup_roles(code, pcs, profile, 1).expect("recording setup");
+        let prepared = setup
+            .proposer
+            .prepare(BlockId::new([0x56; 32]), &[Fr::from(7)])
+            .expect("prepared block");
+        let plan = setup
+            .verifier
+            .v1_from_indices(&prepared.header, &[0, 0])
+            .expect("repeated draw is valid");
+        let responses = prepared.dispersal.respond(&plan).expect("responses");
+        let verified = setup
+            .verifier
+            .v2(&prepared.header, &plan, &responses)
+            .expect("repeated opening verifies");
+        assert_eq!(verified.sampled_indices(), &[0, 0]);
+        assert_eq!(verified.samples().len(), 2);
     }
 }

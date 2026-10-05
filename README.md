@@ -45,7 +45,7 @@ For a shorter Table 5 check:
 python3 scripts/communication-storage.py --runs 1 --threads 1 --ks 4096 --output-dir results/table5-check
 ```
 
-Each comparison result is saved in the CSV files. 
+Each comparison result is saved in the CSV files.
 
 ## Read the results
 
@@ -73,4 +73,4 @@ In `table5.csv`, the paper's total per-node communication column reports client 
 
 The scalar WHIR benchmark source is `src/das/bcc_whir/scalar_opening.rs`, also referred to as the `bcc_whir_jb_scalar_opening` Cargo example.
 
-The optional `bcc-whir-mu-test.py` and `report-bcc-whir-mu-test.py` scripts compare BCC setup parameters separately. 
+The optional `bcc-whir-mu-test.py` and `report-bcc-whir-mu-test.py` scripts compare BCC setup parameters separately.

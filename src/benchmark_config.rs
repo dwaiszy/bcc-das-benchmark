@@ -16,7 +16,7 @@ pub const LIGHT_CLIENT_COUNT: usize = 1_000;
 
 /// The paper targets a sampler failure probability of at most `10^-9`.
 pub const SAMPLING_FAILURE_PROBABILITY: f64 = 1e-9;
-/// Conservative bit equivalent of the paper's `10^-9` sampler target.
+/// Integer bit value corresponding to the paper's `10^-9` sampling target.
 pub const SAMPLING_SOUNDNESS_BITS: usize = 30;
 /// The paper reports all measurements using a single proposer thread.
 pub const PROPOSER_THREADS: usize = 1;
@@ -43,8 +43,8 @@ pub fn configured_soundness_bits() -> usize {
     (-configured_failure_probability().log2()).ceil() as usize
 }
 
-/// Return the configured proposer parallelism, defaulting to the standard
-/// benchmark thread count.
+/// Return the proposer thread count used by the benchmark. The default matches
+/// the paper's single-thread evaluation.
 pub fn proposer_threads() -> usize {
     std::env::var("DAS_PROPOSER_THREADS")
         .ok()
@@ -66,8 +66,7 @@ pub fn configured_group_size() -> usize {
         .unwrap_or(64)
 }
 
-/// Group sizes used by the extended WHIR pre-sampling benchmark. The single
-/// value remains the default so existing benchmark invocations are stable.
+/// Optional group-size setting for batch-opening benchmark - WHIR PCS.
 pub fn configured_group_sizes() -> Vec<usize> {
     std::env::var("DAS_BENCH_GROUP_SIZES")
         .ok()
@@ -113,10 +112,8 @@ impl MatchedParameters {
 
     /// Rate-1/4 geometry for an even BCC block count `mu`.
     ///
-    /// Holding the global dimension fixed while increasing `mu` requires a
-    /// correspondingly smaller `omega`; callers should choose
-    /// `mu * omega = k`.  The historical benchmark remains the `mu = 4`
-    /// specialization above.
+    /// The parameters satisfy `k = mu * omega`. Thus, increasing the number of
+    /// BCC blocks reduces the block width. The default setting is `mu = 4`.
     pub fn rate_one_quarter_with_mu(omega: usize, mu: usize) -> Self {
         assert!(omega.is_power_of_two(), "omega must be a power of two");
         assert!(mu >= 2 && mu % 2 == 0, "mu must be an even integer >= 2");
@@ -349,8 +346,8 @@ impl MasterInput {
         hex(&self.hash)
     }
 
-    /// Serialize the logical benchmark input using the shared little-endian
-    /// u64 representation.
+    /// Encode the benchmark input as little-endian `u64` values using the shared
+    /// representation.
     pub fn serialized_le_bytes(&self) -> Vec<u8> {
         self.values
             .iter()
@@ -422,8 +419,8 @@ pub fn fresh_seed() -> [u8; 32] {
     seed
 }
 
-/// Read a 32-byte hexadecimal seed from an environment variable, falling
-/// back to fresh randomness when it is absent or malformed.
+/// Read a 32-byte hexadecimal seed from the environment. Generate a fresh seed
+/// when the variable is missing or invalid.
 pub fn configured_seed(name: &str) -> [u8; 32] {
     std::env::var(name)
         .ok()
@@ -546,8 +543,8 @@ mod tests {
 
     #[test]
     fn light_client_sample_sets_have_no_global_disjointness_requirement() {
-        // Scheduling is stateless: two clients selecting the same seed may
-        // overlap completely, and neither sample_set is rejected or changed.
+        // Each client generates its sample set independently. Identical seeds may
+        // produce identical or overlapping positions.
         let client_a = MasterSampleSet::generate(64, 1, [19; 32]);
         let client_b = MasterSampleSet::generate(64, 1, [19; 32]);
         assert_eq!(client_a.indices(), client_b.indices());
